@@ -3,6 +3,7 @@ from __future__ import annotations
 from __future__ import annotations
 
 from datetime import datetime
+from textwrap import shorten
 from typing import Iterable
 
 
@@ -61,6 +62,42 @@ def format_idea_digest(idea: "Idea") -> str:
         f"{idea.ticker} ({idea.board}) — {idea.thesis}. "
         f"Горизонт {idea.horizon_days} дн. Источники: {sources}"
     )
+
+
+def format_idea_plan_details(idea: "Idea") -> str:
+    from .ideas import Idea
+
+    entry_low, entry_high = idea.entry_range
+    currency = idea.metrics.get("currency") or "RUB"
+    thesis = shorten(idea.thesis, width=180, placeholder="…") if idea.thesis else ""
+    entry = (
+        f"  Горизонт: {idea.horizon_days} дн.; вход {fmt_amount(entry_low, 2)}–{fmt_amount(entry_high, 2)} {currency}; "
+        f"стоп {fmt_amount(idea.stop_hint, 2)} {currency}"
+    )
+
+    lines = []
+    if thesis:
+        lines.append(f"  Тезис: {thesis}")
+    lines.append(entry)
+
+    metrics_line = _render_metrics(idea.metrics)
+    if metrics_line and metrics_line != "-":
+        lines.append(f"  Метрики: {metrics_line}")
+
+    risks = ", ".join(idea.risks) if idea.risks else "-"
+    lines.append(f"  Риски: {risks}")
+
+    sources = _render_sources(idea.sources, limit=2)
+    lines.append(f"  Источники: {sources}")
+
+    confidence = _confidence_ru(idea.confidence)
+    score = idea.metrics.get("score")
+    if isinstance(score, (int, float)):
+        lines.append(f"  Уверенность: {confidence} (скор {float(score):.2f})")
+    else:
+        lines.append(f"  Уверенность: {confidence}")
+
+    return "\n".join(lines)
 
 
 def _render_metrics(metrics: dict[str, float | str | None]) -> str:

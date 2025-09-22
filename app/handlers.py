@@ -1,4 +1,6 @@
-from datetime import date
+from datetime import date, datetime
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
+from typing import Dict, Tuple
 from textwrap import shorten
 from sqlalchemy import func
 
@@ -7,10 +9,10 @@ from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import ContextTypes, ConversationHandler
 from ._requests import RequestException
 from .db import SessionLocal
-from .formatting import fmt_amount, fmt_signed, format_idea
+from .formatting import fmt_amount, fmt_signed, format_idea, format_idea_plan_details
 from .ideas import generate_ideas, rank_and_filter
 from .models import User, Contribution
-from .providers import MarketDataError
+from .providers import MarketDataError, Quote, get_security_quote
 from .strategy import propose_allocation
 
 # --- Кнопки главного меню
@@ -27,6 +29,58 @@ CONTRIB_KB = ReplyKeyboardMarkup([[CANCEL_BTN]], resize_keyboard=True)
 ADJUST_KB = ReplyKeyboardMarkup([[CANCEL_BTN]], resize_keyboard=True)
 
 
+def _apply_quote_to_line(line, quote: Quote) -> None:
+    line.note = None
+    line.quote = quote
+
+    lot_cost = Decimal(str(quote.price)) * Decimal(quote.lot)
+    if lot_cost <= 0:
+        line.lots = None
+        line.units = None
+        line.invested = None
+        line.leftover = float(line.amount)
+        line.note = "некорректная цена от источника"
+        return
+
+    amount_value = Decimal(line.amount)
+    lots = int((amount_value / lot_cost).to_integral_value(rounding=ROUND_DOWN))
+    line.lots = lots
+    line.units = lots * quote.lot
+    invested = (lot_cost * lots).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    line.invested = float(invested)
+    leftover = amount_value - invested
+    line.leftover = float(leftover)
+
+
+def _fallback_quote_from_idea(line, idea) -> Quote | None:
+    price = idea.metrics.get("price")
+    lot = idea.metrics.get("lot")
+    currency = idea.metrics.get("currency") or "RUB"
+
+    if not isinstance(price, (int, float)) or not isinstance(lot, (int, float)):
+        return None
+
+    try:
+        lot_int = int(lot)
+    except (TypeError, ValueError):
+        return None
+
+    if lot_int <= 0:
+        return None
+
+    quote = Quote(
+        ticker=(line.ticker or idea.ticker).upper(),
+        board=(line.board or idea.board or "TQBR").upper(),
+        price=float(price),
+        currency=str(currency),
+        lot=lot_int,
+        as_of=datetime.utcnow(),
+        source="MOEX ISS (идея)",
+    )
+    _apply_quote_to_line(line, quote)
+    return quote
+
+
 def load_balance(session, user_id: int) -> float:
     return (
         session.query(func.sum(Contribution.amount))
@@ -40,12 +94,14 @@ async def record_manual_contribution(update: Update, ctx: ContextTypes.DEFAULT_T
     advice = None
     total = 0.0
     error_note = "Не удалось рассчитать распределение сейчас. Попробуй позже."
+    risk = "balanced"
 
     with SessionLocal() as s:
         u = s.get(User, update.effective_user.id)
         if not u:
             ctx.user_data.pop("mode", None)
             return await update.message.reply_text("Сначала /start", reply_markup=MAIN_KB)
+        risk = u.risk or "balanced"
         s.add(
             Contribution(
                 user_id=u.user_id,
@@ -57,7 +113,7 @@ async def record_manual_contribution(update: Update, ctx: ContextTypes.DEFAULT_T
         s.commit()
         total = load_balance(s, u.user_id)
         try:
-            advice = propose_allocation(amount, u.risk)
+            advice = propose_allocation(amount, risk)
         except (MarketDataError, RequestException) as exc:
             logger.warning(
                 "Allocation unavailable for %s: %s", update.effective_user.id, exc
@@ -75,13 +131,62 @@ async def record_manual_contribution(update: Update, ctx: ContextTypes.DEFAULT_T
 
     lines: list[str] = []
     quote_sources: set[str] = set()
+    idea_lookup: Dict[Tuple[str, str], object] = {}
+
+    if advice:
+        try:
+            generated = generate_ideas(risk)
+        except Exception as exc:  # pragma: no cover - network failures in prod
+            logger.warning("Idea enrichment failed for %s: %s", update.effective_user.id, exc)
+            generated = []
+        else:
+            try:
+                rank_and_filter(generated)
+            except Exception as exc:  # pragma: no cover
+                logger.warning("Idea ranking failed for %s: %s", update.effective_user.id, exc)
+            idea_lookup = {
+                (item.ticker.upper(), item.board.upper()): item for item in generated
+            }
+
+        for line in advice.plan:
+            if not line.ticker or line.type == "cash":
+                continue
+
+            if line.quote is None:
+                try:
+                    refreshed = get_security_quote(line.ticker, line.board or "TQBR")
+                except MarketDataError as exc:
+                    idea = idea_lookup.get(
+                        (line.ticker.upper(), (line.board or "TQBR").upper())
+                    )
+                    if idea:
+                        quote = _fallback_quote_from_idea(line, idea)
+                        if quote:
+                            continue
+                    logger.warning(
+                        "Quote still unavailable for %s %s: %s",
+                        line.ticker,
+                        line.board or "TQBR",
+                        exc,
+                    )
+                except Exception as exc:  # pragma: no cover
+                    logger.error(
+                        "Unexpected quote retry failure for %s %s: %s",
+                        line.ticker,
+                        line.board or "TQBR",
+                        exc,
+                    )
+                else:
+                    _apply_quote_to_line(line, refreshed)
 
     if advice:
         for line in advice.plan:
             percent = round(line.weight * 100)
             base = f"- {line.label}: {fmt_amount(line.amount)} ₽ (~{percent}%)"
+            section_lines = [base]
+
             if line.type == "cash":
-                lines.append(base)
+                lines.append("\n".join(section_lines))
                 continue
 
             if line.quote:
@@ -95,17 +200,22 @@ async def record_manual_contribution(update: Update, ctx: ContextTypes.DEFAULT_T
                     )
                     if line.leftover and line.leftover >= 1:
                         info += f" (остаток {fmt_amount(line.leftover)} ₽)"
-                    lines.append(base + "\n" + info)
+                    section_lines.append(info)
                 else:
-                    lines.append(
-                        base
-                        + "\n  "
-                        + f"Цена {price} ₽ за бумагу. Отложим {fmt_amount(line.amount)} ₽,"
-                        + " пока не хватит на целый лот."
+                    section_lines.append(
+                        f"  Цена {price} ₽ за бумагу. Отложим {fmt_amount(line.amount)} ₽, пока не хватит на целый лот."
                     )
             else:
-                note = f" ({line.note})" if line.note else ""
-                lines.append(base + note)
+                note = line.note or "котировка недоступна"
+                section_lines.append(f"  Примечание: {note}")
+
+            if line.ticker:
+                key = (line.ticker.upper(), (line.board or "TQBR").upper())
+                idea = idea_lookup.get(key)
+                if idea:
+                    section_lines.append(format_idea_plan_details(idea))
+
+            lines.append("\n".join(section_lines))
 
         if advice.analytics:
             summary = advice.analytics.get("summary") or ""
