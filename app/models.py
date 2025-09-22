@@ -16,4 +16,4 @@ class Contribution(Base):
     user_id = Column(Integer, index=True)
     date = Column(Date)
     amount = Column(Float)
-    source = Column(String, default="manual")  # "salary" | "advance" | "manual"
+    source = Column(String, default="manual")  # "salary" | "advance" | "manual" | "adjustment"
