@@ -62,6 +62,26 @@ def test_get_key_rate_falls_back_to_cbr():
 
 
 @responses.activate
+def test_get_key_rate_uses_configured_fallback(monkeypatch):
+    monkeypatch.setattr(providers.settings, "KEY_RATE_FALLBACK", 0.123)
+    responses.add(
+        responses.GET,
+        "https://iss.moex.com/iss/statistics/engines/stock/markets/bonds/ruonia.json",
+        status=500,
+        json={},
+    )
+    responses.add(
+        responses.GET,
+        "https://www.cbr-xml-daily.ru/daily_json.js",
+        status=500,
+        json={},
+    )
+    rate = providers.get_key_rate()
+    assert pytest.approx(rate, rel=1e-6) == 0.123
+    assert len(responses.calls) == 2
+
+
+@responses.activate
 def test_get_index_value_parses_payload():
     responses.add(
         responses.GET,

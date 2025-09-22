@@ -5,6 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict  # было: from
 class Settings(BaseSettings):
     BOT_TOKEN: str
     TZ: str = "Europe/Moscow"
+    KEY_RATE_FALLBACK: float | None = Field(default=0.16, ge=0.0)
     IDEAS_MIN_SOURCES: int = Field(default=2, ge=1)
     IDEAS_MAX_AGE_DAYS: int = Field(default=90, ge=1)
     IDEAS_TOPN: int = Field(default=5, ge=1, le=8)

@@ -6,6 +6,7 @@ from typing import Any, Optional, Tuple
 
 from . import _requests as requests
 from ._loguru import logger
+from .config import settings
 from ._tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 
@@ -53,9 +54,17 @@ def get_key_rate() -> float:
         rate = _fetch_cbr_key_rate()
 
     if rate is None:
-        if _KEY_RATE_CACHE:
+        fallback = getattr(settings, "KEY_RATE_FALLBACK", None)
+        if fallback is not None:
+            logger.warning(
+                "Key rate unavailable from remote sources; using fallback %.2f%%",
+                fallback * 100,
+            )
+            rate = fallback
+        elif _KEY_RATE_CACHE:
             return _KEY_RATE_CACHE[1]
-        raise MarketDataError("не удалось получить ключевую ставку")
+        else:
+            raise MarketDataError("не удалось получить ключевую ставку")
 
     _KEY_RATE_CACHE = (now, rate)
     return rate

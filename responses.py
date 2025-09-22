@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 from contextlib import contextmanager
+from functools import wraps
 from types import SimpleNamespace
 from typing import Any, Callable, Pattern
 from urllib.parse import urlencode
@@ -66,6 +67,7 @@ def _patched() -> Callable[..., Any]:
 
 
 def activate(func: Callable) -> Callable:
+    @wraps(func)
     def wrapper(*args: Any, **kwargs: Any):
         with _patched():
             return func(*args, **kwargs)
