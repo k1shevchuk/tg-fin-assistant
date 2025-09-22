@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, Float, Boolean
+from sqlalchemy import Column, Integer, String, Date, Float
 from .db import Base
 
 class User(Base):
@@ -9,7 +9,6 @@ class User(Base):
     min_contrib = Column(Integer, default=40000)
     max_contrib = Column(Integer, default=50000)
     risk = Column(String, default="balanced")
-    got_salary = Column(Boolean, default=False)
 
 class Contribution(Base):
     __tablename__ = "contribs"
