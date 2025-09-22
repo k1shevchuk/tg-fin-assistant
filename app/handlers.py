@@ -1,4 +1,5 @@
 from datetime import date
+from sqlalchemy import func
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import ContextTypes, ConversationHandler
 from .db import SessionLocal
@@ -10,6 +11,15 @@ MAIN_KB = ReplyKeyboardMarkup(
     [["Внести взнос", "Статус"], ["Сменить риск"]],
     resize_keyboard=True
 )
+
+CANCEL_BTN = "Отмена"
+RISK_CHOICES = ["conservative", "balanced", "aggressive"]
+RISK_KB = ReplyKeyboardMarkup([RISK_CHOICES, [CANCEL_BTN]], resize_keyboard=True)
+CONTRIB_KB = ReplyKeyboardMarkup([[CANCEL_BTN]], resize_keyboard=True)
+
+
+def fmt_amount(value: float) -> str:
+    return f"{value:,.0f}".replace(",", " ")
 
 # --- Состояния мастера
 ADV_DAY, SAL_DAY, MIN_AMT, MAX_AMT, RISK = range(5)
@@ -75,14 +85,19 @@ async def setup_max(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Должно быть больше минимума. Введи заново.")
         return MAX_AMT
     ctx.user_data["max"] = mx
-    kb = ReplyKeyboardMarkup([["conservative","balanced","aggressive"]], resize_keyboard=True)
+    kb = ReplyKeyboardMarkup([RISK_CHOICES], resize_keyboard=True)
     await update.message.reply_text("Выбери риск-профиль:", reply_markup=kb)
     return RISK
 
 async def setup_risk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     risk = update.message.text
+        codex/analyze-telegram-bot-code-for-issues-rq1zbt
+    if risk not in set(RISK_CHOICES):
+        kb = ReplyKeyboardMarkup([RISK_CHOICES], resize_keyboard=True)
+=======
     if risk not in {"conservative","balanced","aggressive"}:
         kb = ReplyKeyboardMarkup([["conservative","balanced","aggressive"]], resize_keyboard=True)
+        main
         await update.message.reply_text(
             "Нажми одну из кнопок: conservative | balanced | aggressive",
             reply_markup=kb
@@ -99,7 +114,7 @@ async def setup_risk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
     await update.message.reply_text(
         f"Готово.\nАванс: {u.advance_day}\nЗарплата: {u.salary_day}\n"
-        f"Коридор: {u.min_contrib}-{u.max_contrib} ₽\nРиск: {u.risk}\n\n"
+        f"Коридор: {fmt_amount(u.min_contrib)}-{fmt_amount(u.max_contrib)} ₽\nРиск: {u.risk}\n\n"
         "В нужные дни спрошу про доход и предложу распределение.",
         reply_markup=MAIN_KB
     )
@@ -115,42 +130,120 @@ async def setup_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # --- Обработчики кнопок главного меню
 async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    txt = update.message.text
-    if txt == "Статус":
-        with SessionLocal() as s:
-            u = s.get(User, update.effective_user.id)
-            if not u: return await update.message.reply_text("Сначала /start")
+    txt = (update.message.text or "").strip()
+    mode = ctx.user_data.get("mode")
+
+    if txt == CANCEL_BTN:
+        if mode:
+            ctx.user_data.pop("mode", None)
             return await update.message.reply_text(
-                f"Аванс: {u.advance_day}\nЗарплата: {u.salary_day}\n"
-                f"Взносы: {u.min_contrib}-{u.max_contrib} ₽\nРиск: {u.risk}",
-                reply_markup=MAIN_KB
+                "Отменил. Возвращаюсь к меню.",
+                reply_markup=MAIN_KB,
             )
-    if txt == "Сменить риск":
-        kb = ReplyKeyboardMarkup([["conservative","balanced","aggressive"]], resize_keyboard=True)
-        return await update.message.reply_text("Выбери риск-профиль:", reply_markup=kb)
-    if txt in {"conservative","balanced","aggressive"}:
-        with SessionLocal() as s:
-            u = s.get(User, update.effective_user.id)
-            if not u: return await update.message.reply_text("Сначала /start")
-            u.risk = txt; s.commit()
-        return await update.message.reply_text(f"Риск-профиль обновлён: {txt}", reply_markup=MAIN_KB)
-    if txt == "Внести взнос":
-        return await update.message.reply_text("Введи сумму взноса, ₽:")
-    # если это число — трактуем как взнос
-    try:
-        amount = float(txt.replace(" ", ""))
-        with SessionLocal() as s:
-            u = s.get(User, update.effective_user.id)
-            if not u: return await update.message.reply_text("Сначала /start")
-            s.add(Contribution(user_id=u.user_id, date=date.today(), amount=amount, source="manual")); s.commit()
-            target, plan = propose_allocation(amount, u.risk)
-        lines = "\n".join(f"- {k}: {v:,.0f} ₽".replace(",", " ") for k, v in plan.items())
         return await update.message.reply_text(
-            f"Зачислил {amount:,.0f} ₽.\nЦель: {target}\nРаспределение:\n{lines}",
-            reply_markup=MAIN_KB
+            "Хорошо, ничего не делаем.",
+            reply_markup=MAIN_KB,
         )
-    except Exception:
-        return await update.message.reply_text("Не понял. Используй меню или введи сумму, ₽.", reply_markup=MAIN_KB)
+
+    if txt == "Статус":
+        ctx.user_data.pop("mode", None)
+        with SessionLocal() as s:
+            u = s.get(User, update.effective_user.id)
+            if not u:
+                return await update.message.reply_text("Сначала /start", reply_markup=MAIN_KB)
+            total = (
+                s.query(func.sum(Contribution.amount))
+                .filter(Contribution.user_id == u.user_id)
+                .scalar()
+                or 0.0
+            )
+        return await update.message.reply_text(
+            f"Аванс: {u.advance_day}\nЗарплата: {u.salary_day}\n"
+            f"Взносы: {fmt_amount(u.min_contrib)}-{fmt_amount(u.max_contrib)} ₽\n"
+            f"Риск: {u.risk}\nТекущий баланс: {fmt_amount(total)} ₽",
+            reply_markup=MAIN_KB,
+        )
+
+    if txt == "Сменить риск":
+        ctx.user_data["mode"] = "risk"
+        return await update.message.reply_text(
+            "Выбери риск-профиль или нажми «Отмена».",
+            reply_markup=RISK_KB,
+        )
+
+    if txt in RISK_CHOICES:
+        with SessionLocal() as s:
+            u = s.get(User, update.effective_user.id)
+            if not u:
+                ctx.user_data.pop("mode", None)
+                return await update.message.reply_text("Сначала /start", reply_markup=MAIN_KB)
+            u.risk = txt
+            s.commit()
+        ctx.user_data.pop("mode", None)
+        return await update.message.reply_text(
+            f"Риск-профиль обновлён: {txt}",
+            reply_markup=MAIN_KB,
+        )
+
+    if mode == "risk":
+        return await update.message.reply_text(
+            "Пожалуйста, выбери одну из кнопок или нажми «Отмена».",
+            reply_markup=RISK_KB,
+        )
+
+    if txt == "Внести взнос":
+        ctx.user_data["mode"] = "contrib"
+        return await update.message.reply_text(
+            "Введи сумму взноса, ₽. Для отмены нажми «Отмена».",
+            reply_markup=CONTRIB_KB,
+        )
+
+    normalized = txt.replace(" ", "").replace(",", ".")
+    try:
+        amount = float(normalized)
+    except ValueError:
+        amount = None
+
+    if amount is not None and amount > 0:
+        with SessionLocal() as s:
+            u = s.get(User, update.effective_user.id)
+            if not u:
+                ctx.user_data.pop("mode", None)
+                return await update.message.reply_text("Сначала /start", reply_markup=MAIN_KB)
+            s.add(
+                Contribution(
+                    user_id=u.user_id,
+                    date=date.today(),
+                    amount=amount,
+                    source="manual",
+                )
+            )
+            s.commit()
+            total = (
+                s.query(func.sum(Contribution.amount))
+                .filter(Contribution.user_id == u.user_id)
+                .scalar()
+                or 0.0
+            )
+            target, plan = propose_allocation(amount, u.risk)
+        lines = "\n".join(f"- {k}: {fmt_amount(v)} ₽" for k, v in plan.items())
+        ctx.user_data.pop("mode", None)
+        return await update.message.reply_text(
+            f"Зачислил {fmt_amount(amount)} ₽.\nЦель: {target}\nРаспределение:\n{lines}\n"
+            f"Текущий баланс: {fmt_amount(total)} ₽",
+            reply_markup=MAIN_KB,
+        )
+
+    if mode == "contrib":
+        return await update.message.reply_text(
+            "Нужна сумма в рублях. Попробуй ещё раз или нажми «Отмена».",
+            reply_markup=CONTRIB_KB,
+        )
+
+    return await update.message.reply_text(
+        "Не понял. Используй меню или введи сумму, ₽.",
+        reply_markup=MAIN_KB,
+    )
 
 # Старые команды оставляем, если привык:
 async def setup2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):  # совместимость
