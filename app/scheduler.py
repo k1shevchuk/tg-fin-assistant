@@ -4,6 +4,7 @@ from apscheduler.triggers.cron import CronTrigger
 from telegram.ext import Application
 from .db import SessionLocal
 from .models import User
+from .formatting import fmt_amount
 from .strategy import propose_allocation
 
 def setup_jobs(app: Application, tz: str):
@@ -11,16 +12,16 @@ def setup_jobs(app: Application, tz: str):
 
     @sch.scheduled_job(CronTrigger(hour=10, minute=0))
     async def ping_income_days():
-        today = datetime.now().day
+        today = datetime.now(sch.timezone).day
         with SessionLocal() as s:
             users = s.query(User).all()
             for u in users:
                 if today in (u.advance_day, u.salary_day):
                     await app.bot.send_message(
                         u.user_id,
-                        "Сегодня день выплаты (аванс/зарплата). Получил доход? Ответь:\n"
-                        "/income salary <сумма>  или  /income advance <сумма>\n"
-                        "После — внеси любую часть: /contrib <сумма>."
+                        "Сегодня день выплаты (аванс/зарплата). Получил доход?"
+                        " Открой бот, нажми «Внести взнос» и введи сумму — я предложу распределение."
+                        " Если параметры поменялись, запусти /setup."
                     )
 
     @sch.scheduled_job(CronTrigger(day="15", hour=11, minute=0))
@@ -28,9 +29,25 @@ def setup_jobs(app: Application, tz: str):
         with SessionLocal() as s:
             users = s.query(User).all()
             for u in users:
-                target, plan = propose_allocation((u.min_contrib + u.max_contrib)/2, u.risk)
-                text = "Напоминание про взнос. Цель: " + target + "\n" + \
-                       "\n".join(f"- {k}: {v:,.0f} ₽".replace(",", " ") for k, v in plan.items())
+                advice = propose_allocation((u.min_contrib + u.max_contrib) / 2, u.risk)
+                lines = []
+                for line in advice.plan:
+                    percent = round(line.weight * 100)
+                    lines.append(f"- {line.label}: {fmt_amount(line.amount)} ₽ (~{percent}%)")
+                block = "\n".join(lines)
+                text = (
+                    "Напоминание про взнос. "
+                    f"Цель: {advice.target}\n{block}\n"
+                    "Когда будешь готов, нажми «Внести взнос» и введи сумму."
+                )
+                if advice.analytics:
+                    extra = advice.analytics.get("title")
+                    source = advice.analytics.get("source", "MOEX")
+                    url = advice.analytics.get("url")
+                    if extra:
+                        text += f"\n\nСвежая аналитика {source}: {extra}"
+                    if url:
+                        text += f"\n{url}"
                 await app.bot.send_message(u.user_id, text)
 
     sch.start()
