@@ -116,17 +116,16 @@ async def record_manual_contribution(update: Update, ctx: ContextTypes.DEFAULT_T
 
     plan_text = "\n".join(lines)
     ctx.user_data.pop("mode", None)
-    return await update.message.reply_text(
-        f"Зачислил {fmt_amount(amount)} ₽.\nЦель: {advice.target}\nРаспределение:\n{plan_text}\n"
-        f"\nТекущий баланс: {fmt_amount(total)} ₽",
-        target, plan = propose_allocation(amount, u.risk)
-    lines = "\n".join(f"- {k}: {fmt_amount(v)} ₽" for k, v in plan.items())
-    ctx.user_data.pop("mode", None)
-    return await update.message.reply_text(
-        f"Зачислил {fmt_amount(amount)} ₽.\nЦель: {target}\nРаспределение:\n{lines}\n"
+    message_lines = [
+        f"Зачислил {fmt_amount(amount)} ₽.",
+        f"Цель: {advice.target}",
+        "Распределение:",
+        plan_text,
+        "",
         f"Текущий баланс: {fmt_amount(total)} ₽",
-        reply_markup=MAIN_KB,
-    )
+    ]
+    text = "\n".join(message_lines)
+    return await update.message.reply_text(text, reply_markup=MAIN_KB)
 
 
 async def record_balance_adjustment(update: Update, ctx: ContextTypes.DEFAULT_TYPE, desired_total: float):
