@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Tuple
 
 from . import _requests as requests
@@ -40,12 +40,16 @@ _HISTORY_CACHE: dict[tuple[str, str, int], tuple[datetime, list[dict[str, Any]]]
 _HISTORY_TTL = timedelta(minutes=10)
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def get_key_rate() -> float:
     """Return the current key rate, preferring MOEX RUONIA with CBR fallback."""
 
     global _KEY_RATE_CACHE
 
-    now = datetime.utcnow()
+    now = _utc_now()
     if _KEY_RATE_CACHE and now - _KEY_RATE_CACHE[0] < _KEY_RATE_TTL:
         return _KEY_RATE_CACHE[1]
 
@@ -79,8 +83,9 @@ def get_security_quote(ticker: str, board: str = "TQBR") -> Quote:
 
     board = board.upper()
     key = (ticker.upper(), board)
-    now = datetime.utcnow()
+    now = _utc_now()
     cached = _QUOTE_CACHE.get(key)
+    stale_quote = cached[1] if cached else None
     if cached and now - cached[0] < _QUOTE_CACHE_TTL:
         return cached[1]
 
@@ -127,6 +132,11 @@ def get_security_quote(ticker: str, board: str = "TQBR") -> Quote:
         return quote
 
     message = f"не удалось получить котировку {ticker} ({board})"
+    if stale_quote is not None:
+        logger.warning(
+            "Returning stale quote for %s %s after fetch failure", ticker, board
+        )
+        return stale_quote
     if last_error is not None:
         raise MarketDataError(message) from last_error
     raise MarketDataError(message)
@@ -176,7 +186,7 @@ def get_index_value(name: str) -> float:
     """Return the latest value for a MOEX index."""
 
     key = name.upper()
-    now = datetime.utcnow()
+    now = _utc_now()
     cached = _INDEX_CACHE.get(key)
     if cached and now - cached[0] < _INDEX_CACHE_TTL:
         return cached[1]
@@ -214,7 +224,7 @@ def get_index_value(name: str) -> float:
 def get_security_snapshot(ticker: str) -> dict[str, Any]:
     """Return static instrument metadata from ISS /securities endpoint."""
 
-    now = datetime.utcnow()
+    now = _utc_now()
     cached = _SNAPSHOT_CACHE.get(ticker.upper())
     if cached and now - cached[0] < _SNAPSHOT_TTL:
         return cached[1]
@@ -232,13 +242,13 @@ def get_security_history(ticker: str, board: str, days: int = 260) -> list[dict[
 
     board = board.upper()
     key = (ticker.upper(), board, days)
-    now = datetime.utcnow()
+    now = _utc_now()
     cached = _HISTORY_CACHE.get(key)
     if cached and now - cached[0] < _HISTORY_TTL:
         return cached[1]
 
     routes = _market_candidates(board)
-    cutoff = (datetime.utcnow() - timedelta(days=days * 2)).date()
+    cutoff = (_utc_now() - timedelta(days=days * 2)).date()
     collected: list[dict[str, Any]] = []
 
     for engine, market in routes:
@@ -359,22 +369,30 @@ def _extract_timestamp(row: dict[str, Any]) -> datetime:
             continue
         if isinstance(raw, (int, float)):
             try:
-                return datetime.fromtimestamp(float(raw))
+                return datetime.fromtimestamp(float(raw), tz=timezone.utc)
             except ValueError:
                 continue
         if isinstance(raw, str):
-            cleaned = raw.strip().replace(" ", "T")
-            for pattern in (cleaned, cleaned + "Z"):
-                try:
-                    return datetime.fromisoformat(pattern)
-                except ValueError:
-                    continue
+            cleaned = raw.strip()
+            iso_candidate = cleaned.replace(" ", "T").replace("Z", "+00:00")
+            try:
+                parsed = datetime.fromisoformat(iso_candidate)
+            except ValueError:
+                parsed = None
+            if parsed is not None:
+                return (
+                    parsed.astimezone(timezone.utc)
+                    if parsed.tzinfo
+                    else parsed.replace(tzinfo=timezone.utc)
+                )
             for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
                 try:
-                    return datetime.strptime(raw.strip(), fmt)
+                    parsed = datetime.strptime(cleaned, fmt)
                 except ValueError:
                     continue
-    return datetime.utcnow()
+                else:
+                    return parsed.replace(tzinfo=timezone.utc)
+    return _utc_now()
 
 
 def _clean_str(value: Any) -> Optional[str]:

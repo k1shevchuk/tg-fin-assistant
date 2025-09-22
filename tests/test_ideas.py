@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -22,7 +22,7 @@ class DummyQuote:
         self.board = "TQBR"
         self.ticker = "SBER"
         self.lot = 10
-        self.as_of = datetime.utcnow()
+        self.as_of = datetime.now(timezone.utc)
         self.change = 1.2
 
 
@@ -52,12 +52,12 @@ def mock_providers(monkeypatch):
     monkeypatch.setattr(
         ideas,
         "get_edgar_sources",
-        lambda ticker: [IdeaSource(url="https://sec.gov/doc", name="SEC 10-Q", date=datetime.utcnow())],
+        lambda ticker: [IdeaSource(url="https://sec.gov/doc", name="SEC 10-Q", date=datetime.now(timezone.utc))],
     )
     monkeypatch.setattr(
         ideas,
         "get_latest_value",
-        lambda series, label: (1.23, [IdeaSource(url="https://fred.stlouisfed.org/series/DGS10", name=label, date=datetime.utcnow())]),
+        lambda series, label: (1.23, [IdeaSource(url="https://fred.stlouisfed.org/series/DGS10", name=label, date=datetime.now(timezone.utc))]),
     )
     monkeypatch.setattr(
         ideas,
@@ -70,9 +70,9 @@ def mock_providers(monkeypatch):
                 "price_change_percentage_30d_in_currency": 12.3,
                 "total_volume": 123456789,
                 "market_cap": 900000000,
-                "last_updated": datetime.utcnow().isoformat(),
+                "last_updated": datetime.now(timezone.utc).isoformat(),
             },
-            [IdeaSource(url="https://coingecko.com/bitcoin", name="CoinGecko", date=datetime.utcnow())],
+            [IdeaSource(url="https://coingecko.com/bitcoin", name="CoinGecko", date=datetime.now(timezone.utc))],
         ),
     )
     return history_rows
@@ -92,7 +92,7 @@ def test_rank_and_filter_scores_and_limits(monkeypatch):
     monkeypatch.setattr(ideas.settings, "IDEAS_MIN_SOURCES", 2, raising=False)
     monkeypatch.setattr(ideas.settings, "IDEAS_SCORE_THRESHOLD", 0.5, raising=False)
     monkeypatch.setattr(ideas, "get_key_rate", lambda: 0.12)
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     base_sources = [
         IdeaSource(url="https://moex.com/sber", name="MOEX котировки", date=now),
         IdeaSource(url="https://moex.com/analytics", name="MOEX аналитика", date=now),

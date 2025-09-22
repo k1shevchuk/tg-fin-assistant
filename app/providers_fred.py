@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from . import _requests as requests
@@ -36,7 +36,7 @@ def _fred_get(series_id: str) -> requests.Response:
 def get_latest_value(series_id: str, label: str) -> tuple[Optional[float], list[IdeaSource]]:
     """Return latest observation value and metadata for the given FRED series."""
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     cached = _CACHE.get(series_id)
     if cached and now - cached[0] < _CACHE_TTL:
         return cached[1], cached[2]
@@ -68,6 +68,9 @@ def get_latest_value(series_id: str, label: str) -> tuple[Optional[float], list[
             obs_date = datetime.fromisoformat(date_str)
         except Exception:
             obs_date = now
+        else:
+            if obs_date.tzinfo is None:
+                obs_date = obs_date.replace(tzinfo=timezone.utc)
         sources.append(
             IdeaSource(
                 url=f"https://fred.stlouisfed.org/series/{series_id}",

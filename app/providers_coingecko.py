@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from . import _requests as requests
@@ -31,7 +31,7 @@ def _cg_get(coin_id: str, vs_currency: str) -> requests.Response:
 
 def get_coin_market(coin_id: str, vs_currency: str = "usd") -> tuple[dict[str, Any], list[IdeaSource]]:
     key = (coin_id, vs_currency)
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     cached = _CACHE.get(key)
     if cached and now - cached[0] < _CACHE_TTL:
         return cached[1], cached[2]
@@ -52,9 +52,16 @@ def get_coin_market(coin_id: str, vs_currency: str = "usd") -> tuple[dict[str, A
     if market:
         updated_str: Optional[str] = market.get("last_updated")
         try:
-            updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00")) if updated_str else now
+            updated = (
+                datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
+                if updated_str
+                else now
+            )
         except Exception:
             updated = now
+        else:
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
         sources.append(
             IdeaSource(
                 url=f"https://www.coingecko.com/en/coins/{coin_id}",

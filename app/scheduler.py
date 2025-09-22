@@ -21,12 +21,12 @@ def setup_jobs(app: Application, tz: str):
             users = s.query(User).all()
             for u in users:
                 if today in (u.advance_day, u.salary_day):
-                    await app.bot.send_message(
-                        u.user_id,
-                        "Сегодня день выплаты (аванс/зарплата). Получил доход?"
-                        " Открой бот, нажми «Внести взнос» и введи сумму — я предложу распределение."
-                        " Если параметры поменялись, запусти /setup."
+                    text = (
+                        "Сегодня день выплаты (аванс/зарплата). Получил доход?\n"
+                        "Открой бот, нажми «Внести взнос» и введи сумму — я предложу распределение.\n"
+                        "Если параметры поменялись, запусти /setup."
                     )
+                    await app.bot.send_message(u.user_id, text)
 
     @sch.scheduled_job(CronTrigger(day="15", hour=11, minute=0))
     async def soft_nudge():

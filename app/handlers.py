@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from typing import Dict, Tuple
 from textwrap import shorten
@@ -74,7 +74,7 @@ def _fallback_quote_from_idea(line, idea) -> Quote | None:
         price=float(price),
         currency=str(currency),
         lot=lot_int,
-        as_of=datetime.utcnow(),
+        as_of=datetime.now(timezone.utc),
         source="MOEX ISS (идея)",
     )
     _apply_quote_to_line(line, quote)

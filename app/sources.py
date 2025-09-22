@@ -22,7 +22,7 @@ def filter_fresh_sources(
     max_age_days: int,
     as_of: datetime | None = None,
 ) -> list[IdeaSource]:
-    pivot = _to_utc(as_of or datetime.utcnow())
+    pivot = _to_utc(as_of or datetime.now(timezone.utc))
     fresh: list[IdeaSource] = []
     for item in sources:
         item_date = _to_utc(item.date)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from . import _requests as requests
@@ -29,7 +29,7 @@ def _get(url: str) -> requests.Response:
 
 def _load_ticker_map() -> dict[str, str]:
     global _TICKER_CACHE
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if _TICKER_CACHE and now - _TICKER_CACHE[0] < _TICKER_CACHE_TTL:
         return _TICKER_CACHE[1]
 
@@ -57,7 +57,7 @@ def _load_ticker_map() -> dict[str, str]:
 
 
 def _load_submissions(cik: str) -> Optional[dict]:
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     cached = _SUBMISSION_CACHE.get(cik)
     if cached and now - cached[0] < _SUBMISSION_TTL:
         return cached[1]
@@ -99,7 +99,10 @@ def get_next_report_source(ticker: str) -> Optional[IdeaSource]:
         try:
             report_date = datetime.fromisoformat(date_str)
         except Exception:
-            report_date = datetime.utcnow()
+            report_date = datetime.now(timezone.utc)
+        else:
+            if report_date.tzinfo is None:
+                report_date = report_date.replace(tzinfo=timezone.utc)
         accession = accession_numbers[idx].replace("-", "") if idx < len(accession_numbers) else ""
         document = documents[idx] if idx < len(documents) else ""
         url = (

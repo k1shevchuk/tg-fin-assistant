@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal, Optional
 
 from ._loguru import logger
@@ -395,6 +395,9 @@ def _collect_sources_for_security(
         updated_date = datetime.fromisoformat(str(updated_str)) if updated_str else quote.as_of
     except Exception:
         updated_date = quote.as_of
+    else:
+        if isinstance(updated_date, datetime) and updated_date.tzinfo is None:
+            updated_date = updated_date.replace(tzinfo=timezone.utc)
     sources.append(
         IdeaSource(
             url=f"https://iss.moex.com/iss/securities/{ticker}.json",
@@ -408,7 +411,7 @@ def _collect_sources_for_security(
             IdeaSource(
                 url=commentary["url"],
                 name=f"{commentary.get('source', 'MOEX')} аналитика",
-                date=datetime.utcnow(),
+                date=datetime.now(timezone.utc),
             )
         )
     sec_sources = get_edgar_sources(ticker)

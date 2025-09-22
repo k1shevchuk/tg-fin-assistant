@@ -1,4 +1,5 @@
 import re
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import responses
@@ -166,3 +167,37 @@ def test_get_security_quote_enriches_data():
     assert quote.value == pytest.approx(4567890)
     assert quote.change == pytest.approx(1.25)
     assert quote.currency == "RUB"
+
+
+@responses.activate
+def test_get_security_quote_returns_stale_on_failure():
+    responses.add(
+        responses.GET,
+        "https://iss.moex.com/iss/engines/stock/markets/shares/securities/SBER.json",
+        json={
+            "securities": [{"BOARDID": "TQBR", "FACEUNIT": "RUB", "LOTSIZE": 10}],
+            "marketdata": [
+                {
+                    "BOARDID": "TQBR",
+                    "LAST": 250.5,
+                    "SYSTIME": "2024-10-01 12:00:00",
+                }
+            ],
+        },
+    )
+    quote = providers.get_security_quote("SBER", "TQBR")
+
+    stale_timestamp = datetime.now(timezone.utc) - providers._QUOTE_CACHE_TTL - timedelta(minutes=1)
+    providers._QUOTE_CACHE[("SBER", "TQBR")] = (stale_timestamp, quote)
+
+    responses.reset()
+    responses.add(
+        responses.GET,
+        "https://iss.moex.com/iss/engines/stock/markets/shares/securities/SBER.json",
+        status=500,
+        json={},
+    )
+
+    fallback = providers.get_security_quote("SBER", "TQBR")
+    assert fallback is quote
+    assert len(responses.calls) == 1
