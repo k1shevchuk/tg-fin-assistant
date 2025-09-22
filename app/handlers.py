@@ -1,6 +1,6 @@
 from datetime import date
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import ContextTypes
+from telegram.ext import ContextTypes, ConversationHandler
 from .db import SessionLocal
 from .models import User, Contribution
 from .strategy import propose_allocation
@@ -27,8 +27,9 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # /setup -> мастер
 async def setup_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data.clear()
     await update.message.reply_text(
-        "Укажи день АВАНСА (число месяца 1–28):",
+        "Укажи день АВАНСА (число месяца 1–28). В любой момент можно /cancel",
         reply_markup=ReplyKeyboardRemove()
     )
     return ADV_DAY
@@ -38,7 +39,8 @@ async def setup_adv_day(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         adv = int(update.message.text)
         if not 1 <= adv <= 28: raise ValueError
     except Exception:
-        return await update.message.reply_text("Число 1–28. Введи заново.")
+        await update.message.reply_text("Число 1–28. Введи заново.")
+        return ADV_DAY
     ctx.user_data["adv"] = adv
     await update.message.reply_text("Теперь день ЗАРПЛАТЫ (1–28):")
     return SAL_DAY
@@ -48,7 +50,8 @@ async def setup_sal_day(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         sal = int(update.message.text)
         if not 1 <= sal <= 28: raise ValueError
     except Exception:
-        return await update.message.reply_text("Число 1–28. Введи заново.")
+        await update.message.reply_text("Число 1–28. Введи заново.")
+        return SAL_DAY
     ctx.user_data["sal"] = sal
     await update.message.reply_text("Минимальный ежемесячный взнос (₽):")
     return MIN_AMT
@@ -58,7 +61,8 @@ async def setup_min(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         mn = int(update.message.text)
         if mn < 0: raise ValueError
     except Exception:
-        return await update.message.reply_text("Введи целое число ≥ 0.")
+        await update.message.reply_text("Введи целое число ≥ 0.")
+        return MIN_AMT
     ctx.user_data["min"] = mn
     await update.message.reply_text("Максимальный ежемесячный взнос (₽):")
     return MAX_AMT
@@ -68,7 +72,8 @@ async def setup_max(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         mx = int(update.message.text)
         if mx <= ctx.user_data["min"]: raise ValueError
     except Exception:
-        return await update.message.reply_text("Должно быть больше минимума. Введи заново.")
+        await update.message.reply_text("Должно быть больше минимума. Введи заново.")
+        return MAX_AMT
     ctx.user_data["max"] = mx
     kb = ReplyKeyboardMarkup([["conservative","balanced","aggressive"]], resize_keyboard=True)
     await update.message.reply_text("Выбери риск-профиль:", reply_markup=kb)
@@ -77,7 +82,12 @@ async def setup_max(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def setup_risk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     risk = update.message.text
     if risk not in {"conservative","balanced","aggressive"}:
-        return await update.message.reply_text("Нажми одну из кнопок: conservative | balanced | aggressive")
+        kb = ReplyKeyboardMarkup([["conservative","balanced","aggressive"]], resize_keyboard=True)
+        await update.message.reply_text(
+            "Нажми одну из кнопок: conservative | balanced | aggressive",
+            reply_markup=kb
+        )
+        return RISK
     with SessionLocal() as s:
         u = s.get(User, update.effective_user.id) or User(user_id=update.effective_user.id)
         u.advance_day = ctx.user_data["adv"]
@@ -86,13 +96,22 @@ async def setup_risk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         u.max_contrib = ctx.user_data["max"]
         u.risk = risk
         s.add(u); s.commit()
+    ctx.user_data.clear()
     await update.message.reply_text(
         f"Готово.\nАванс: {u.advance_day}\nЗарплата: {u.salary_day}\n"
         f"Коридор: {u.min_contrib}-{u.max_contrib} ₽\nРиск: {u.risk}\n\n"
         "В нужные дни спрошу про доход и предложу распределение.",
         reply_markup=MAIN_KB
     )
-    return -1  # ConversationHandler.END
+    return ConversationHandler.END
+
+async def setup_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data.clear()
+    await update.message.reply_text(
+        "Настройка прервана. Можно вернуться к меню или снова запустить /setup.",
+        reply_markup=MAIN_KB
+    )
+    return ConversationHandler.END
 
 # --- Обработчики кнопок главного меню
 async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
