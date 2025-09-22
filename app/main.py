@@ -3,7 +3,7 @@ from .config import settings
 from .db import engine, Base
 from .handlers import (
     start, setup_start, setup_adv_day, setup_sal_day, setup_min, setup_max, setup_risk,
-    on_text, setup2, income, contrib, status, risk
+    setup_cancel, on_text, setup2, income, contrib, status, risk, ideas
 )
 from .scheduler import setup_jobs
 from .handlers import ADV_DAY, SAL_DAY, MIN_AMT, MAX_AMT, RISK as RISK_STATE
@@ -22,7 +22,7 @@ def build_app() -> Application:
             MAX_AMT: [MessageHandler(filters.TEXT & ~filters.COMMAND, setup_max)],
             RISK_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, setup_risk)],
         },
-        fallbacks=[]
+        fallbacks=[CommandHandler("cancel", setup_cancel)]
     ))
 
     # Совместимость старых команд
@@ -31,6 +31,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("contrib", contrib))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("risk", risk))
+    app.add_handler(CommandHandler("ideas", ideas))
 
     # Универсальный обработчик текста и кнопок
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
