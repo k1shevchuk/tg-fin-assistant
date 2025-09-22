@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
-import requests
+from . import _requests as requests
+from ._loguru import logger
+from ._tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 
 class MarketDataError(RuntimeError):
@@ -20,15 +22,65 @@ class Quote:
     lot: int
     as_of: datetime
     source: str = "MOEX ISS"
+    value: Optional[float] = None
+    volume: Optional[float] = None
+    change: Optional[float] = None
 
 
 _QUOTE_CACHE: dict[tuple[str, str], tuple[datetime, Quote]] = {}
-_CACHE_TTL = timedelta(minutes=5)
+_QUOTE_CACHE_TTL = timedelta(minutes=10)
+_KEY_RATE_CACHE: tuple[datetime, float] | None = None
+_KEY_RATE_TTL = timedelta(hours=1)
+_INDEX_CACHE: dict[str, tuple[datetime, float]] = {}
+_INDEX_CACHE_TTL = timedelta(minutes=10)
+_SNAPSHOT_CACHE: dict[str, tuple[datetime, dict[str, Any]]] = {}
+_SNAPSHOT_TTL = timedelta(minutes=10)
+_HISTORY_CACHE: dict[tuple[str, str, int], tuple[datetime, list[dict[str, Any]]]] = {}
+_HISTORY_TTL = timedelta(minutes=10)
 
 
 def get_key_rate() -> float:
-    """Return the current key rate (stubbed with a fixed value)."""
-    return 0.17
+    """Return the current key rate using MOEX RUONIA statistics."""
+
+    global _KEY_RATE_CACHE
+
+    now = datetime.utcnow()
+    if _KEY_RATE_CACHE and now - _KEY_RATE_CACHE[0] < _KEY_RATE_TTL:
+        return _KEY_RATE_CACHE[1]
+
+    url = "https://iss.moex.com/iss/statistics/engines/stock/markets/bonds/ruonia.json"
+    try:
+        tables = _fetch_moex_tables(url, {"iss.meta": "off", "limit": 1})
+    except requests.RequestException as exc:
+        logger.warning("Failed to fetch key rate from RUONIA: {exc}", exc=exc)
+        if _KEY_RATE_CACHE:
+            return _KEY_RATE_CACHE[1]
+        raise
+
+    rows = tables.get("ruonia") or tables.get("data") or []
+    if not rows:
+        raise MarketDataError("нет данных RUONIA для расчёта ключевой ставки")
+
+    row = rows[0]
+    value = None
+    for field in ("RUONIA", "RUONIAINDEX", "VALUE"):
+        raw = row.get(field)
+        if isinstance(raw, (int, float)):
+            value = float(raw)
+            break
+        if isinstance(raw, str) and raw:
+            try:
+                value = float(raw.replace(",", "."))
+                break
+            except ValueError:
+                continue
+
+    if value is None:
+        raise MarketDataError("RUONIA вернулась без численного значения")
+
+    rate = value / 100 if value > 1.5 else value
+    _KEY_RATE_CACHE = (now, rate)
+    return rate
 
 
 def get_inflation_est() -> float:
@@ -41,7 +93,7 @@ def get_security_quote(ticker: str, board: str = "TQBR") -> Quote:
     key = (ticker.upper(), board.upper())
     now = datetime.utcnow()
     cached = _QUOTE_CACHE.get(key)
-    if cached and now - cached[0] < _CACHE_TTL:
+    if cached and now - cached[0] < _QUOTE_CACHE_TTL:
         return cached[1]
 
     url = f"https://iss.moex.com/iss/engines/stock/markets/shares/securities/{ticker}.json"
@@ -76,6 +128,9 @@ def get_security_quote(ticker: str, board: str = "TQBR") -> Quote:
         currency=currency,
         lot=lot,
         as_of=as_of,
+        value=_safe_float(md_row.get("VALTODAY")),
+        volume=_safe_float(md_row.get("VOLTODAY")),
+        change=_safe_float(md_row.get("LASTCHANGEPRCNT")),
     )
     _QUOTE_CACHE[key] = (now, quote)
     return quote
@@ -121,10 +176,127 @@ def get_market_commentary() -> Optional[dict[str, str]]:
     return result
 
 
+def get_index_value(name: str) -> float:
+    """Return the latest value for a MOEX index."""
+
+    key = name.upper()
+    now = datetime.utcnow()
+    cached = _INDEX_CACHE.get(key)
+    if cached and now - cached[0] < _INDEX_CACHE_TTL:
+        return cached[1]
+
+    url = (
+        "https://iss.moex.com/iss/statistics/engines/stock/markets/index/"
+        f"securities/{key}.json"
+    )
+    try:
+        tables = _fetch_moex_tables(url, {"iss.meta": "off"})
+    except requests.RequestException as exc:
+        logger.warning("Failed to load index value {key}: {exc}", key=key, exc=exc)
+        if cached:
+            return cached[1]
+        raise
+
+    securities = tables.get("securities") or tables.get("index") or []
+    if not securities:
+        raise MarketDataError(f"индекс {key} не найден")
+
+    row = securities[0]
+    value = None
+    for field in ("CURRENTVALUE", "LASTVALUE", "VALUE"):
+        value = _safe_float(row.get(field))
+        if value is not None:
+            break
+
+    if value is None:
+        raise MarketDataError(f"не удалось получить значение индекса {key}")
+
+    _INDEX_CACHE[key] = (now, value)
+    return value
+
+
+def get_security_snapshot(ticker: str) -> dict[str, Any]:
+    """Return static instrument metadata from ISS /securities endpoint."""
+
+    now = datetime.utcnow()
+    cached = _SNAPSHOT_CACHE.get(ticker.upper())
+    if cached and now - cached[0] < _SNAPSHOT_TTL:
+        return cached[1]
+
+    url = f"https://iss.moex.com/iss/securities/{ticker}.json"
+    tables = _fetch_moex_tables(url, {"iss.meta": "off"})
+    data = tables.get("securities") or []
+    result = data[0] if data else {}
+    _SNAPSHOT_CACHE[ticker.upper()] = (now, result)
+    return result
+
+
+def get_security_history(ticker: str, board: str, days: int = 260) -> list[dict[str, Any]]:
+    """Fetch historical trading data for the given security."""
+
+    key = (ticker.upper(), board.upper(), days)
+    now = datetime.utcnow()
+    cached = _HISTORY_CACHE.get(key)
+    if cached and now - cached[0] < _HISTORY_TTL:
+        return cached[1]
+
+    markets = _market_candidates(board)
+    cutoff = (datetime.utcnow() - timedelta(days=days * 2)).date()
+    collected: list[dict[str, Any]] = []
+
+    for market in markets:
+        start = 0
+        while True:
+            params = {
+                "iss.meta": "off",
+                "from": cutoff.isoformat(),
+                "start": start,
+            }
+            url = (
+                "https://iss.moex.com/iss/history/engines/stock/markets/"
+                f"{market}/securities/{ticker}.json"
+            )
+            try:
+                tables = _fetch_moex_tables(url, params)
+            except requests.RequestException as exc:
+                logger.warning(
+                    "History fetch failed for {ticker} on {market}: {exc}",
+                    ticker=ticker,
+                    market=market,
+                    exc=exc,
+                )
+                break
+
+            rows = tables.get("history") or []
+            if not rows:
+                break
+
+            collected.extend(rows)
+            if len(rows) < 100 or len(collected) >= days:
+                break
+            start += len(rows)
+
+        if collected:
+            break
+
+    _HISTORY_CACHE[key] = (now, collected)
+    return collected
+
+
 # --- Helpers -----------------------------------------------------------------
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=0.5, max=2),
+    retry=retry_if_exception_type(requests.RequestException),
+    reraise=True,
+)
+def _http_get(url: str, params: Optional[dict[str, Any]] = None, headers: Optional[dict[str, str]] = None) -> requests.Response:
+    return requests.get(url, params=params, headers=headers, timeout=5)
+
+
 def _fetch_moex_tables(url: str, params: Optional[dict[str, Any]] = None) -> dict[str, list[dict[str, Any]]]:
-    response = requests.get(url, params=params, timeout=5)
+    response = _http_get(url, params=params)
     response.raise_for_status()
     payload = response.json()
     tables: dict[str, list[dict[str, Any]]] = {}
@@ -213,3 +385,38 @@ def _clean_str(value: Any) -> Optional[str]:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+    if isinstance(value, str):
+        try:
+            return float(value.replace(",", "."))
+        except ValueError:
+            return None
+    return None
+
+
+def _market_candidates(board: str) -> list[str]:
+    mapping = {
+        "TQBR": ["shares"],
+        "TQTF": ["shares", "etf"],
+        "TQTD": ["shares"],
+        "TQOB": ["bonds"],
+        "TQCB": ["bonds"],
+        "TQOD": ["bonds"],
+        "SMAL": ["shares"],
+        "FQBR": ["shares"],
+        "TOM": ["currencies"],
+        "SNDX": ["index"],
+    }
+    candidates = mapping.get(board.upper())
+    if candidates:
+        return candidates
+    return ["shares", "bonds", "etf", "index", "foreignshares", "currencies"]
