@@ -48,6 +48,13 @@ def setup_jobs(app: Application, tz: str):
                         text += f"\n\nСвежая аналитика {source}: {extra}"
                     if url:
                         text += f"\n{url}"
+                target, plan = propose_allocation((u.min_contrib + u.max_contrib)/2, u.risk)
+                lines = "\n".join(f"- {k}: {v:,.0f} ₽".replace(",", " ") for k, v in plan.items())
+                text = (
+                    "Напоминание про взнос. "
+                    f"Цель: {target}\n{lines}\n"
+                    "Когда будешь готов, нажми «Внести взнос» и введи сумму."
+                )
                 await app.bot.send_message(u.user_id, text)
 
     sch.start()
