@@ -1,8 +1,10 @@
 from datetime import date
+from textwrap import shorten
 from sqlalchemy import func
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import ContextTypes, ConversationHandler
 from .db import SessionLocal
+from .formatting import fmt_amount, fmt_signed
 from .models import User, Contribution
 from .strategy import propose_allocation
 
@@ -18,8 +20,6 @@ RISK_CHOICES = ["conservative", "balanced", "aggressive"]
 RISK_KB = ReplyKeyboardMarkup([RISK_CHOICES, [CANCEL_BTN]], resize_keyboard=True)
 CONTRIB_KB = ReplyKeyboardMarkup([[CANCEL_BTN]], resize_keyboard=True)
 ADJUST_KB = ReplyKeyboardMarkup([[CANCEL_BTN]], resize_keyboard=True)
-=======
-        main
 
 
 def fmt_amount(value: float) -> str:
@@ -58,6 +58,67 @@ async def record_manual_contribution(update: Update, ctx: ContextTypes.DEFAULT_T
         )
         s.commit()
         total = load_balance(s, u.user_id)
+        advice = propose_allocation(amount, u.risk)
+
+    lines: list[str] = []
+    quote_sources = set()
+    for line in advice.plan:
+        percent = round(line.weight * 100)
+        base = f"- {line.label}: {fmt_amount(line.amount)} ₽ (~{percent}%)"
+        if line.type == "cash":
+            lines.append(base)
+            continue
+
+        if line.quote:
+            quote_sources.add(line.quote.source)
+            price = fmt_amount(line.quote.price, precision=2)
+            if line.lots:
+                invested = line.invested or 0.0
+                info = (
+                    f"  {line.lots} лот × {line.quote.lot} шт = {line.units} шт по {price} ₽"
+                    f" → {fmt_amount(invested, precision=2)} ₽"
+                )
+                if line.leftover and line.leftover >= 1:
+                    info += f" (остаток {fmt_amount(line.leftover)} ₽)"
+                lines.append(base + "\n" + info)
+            else:
+                lines.append(
+                    base
+                    + "\n  "
+                    + f"Цена {price} ₽ за бумагу. Отложим {fmt_amount(line.amount)} ₽,"
+                    + " пока не хватит на целый лот."
+                )
+        else:
+            note = f" ({line.note})" if line.note else ""
+            lines.append(base + note)
+
+    if advice.analytics:
+        summary = advice.analytics.get("summary") or ""
+        snippet = shorten(summary, width=220, placeholder="…") if summary else ""
+        analytics_lines = [
+            "",
+            f"Актуальная аналитика ({advice.analytics.get('source', 'MOEX')}):",
+            advice.analytics.get("title", ""),
+        ]
+        if snippet:
+            analytics_lines.append(snippet)
+        url = advice.analytics.get("url")
+        if url:
+            analytics_lines.append(url)
+        lines.extend(analytics_lines)
+
+    if quote_sources:
+        lines.append("")
+        lines.append(
+            "Котировки: "
+            + ", ".join(sorted(quote_sources))
+        )
+
+    plan_text = "\n".join(lines)
+    ctx.user_data.pop("mode", None)
+    return await update.message.reply_text(
+        f"Зачислил {fmt_amount(amount)} ₽.\nЦель: {advice.target}\nРаспределение:\n{plan_text}\n"
+        f"\nТекущий баланс: {fmt_amount(total)} ₽",
         target, plan = propose_allocation(amount, u.risk)
     lines = "\n".join(f"- {k}: {fmt_amount(v)} ₽" for k, v in plan.items())
     ctx.user_data.pop("mode", None)
@@ -98,7 +159,6 @@ async def record_balance_adjustment(update: Update, ctx: ContextTypes.DEFAULT_TY
         f"Баланс обновлён: {fmt_amount(new_total)} ₽ (изменение {change} ₽).",
         reply_markup=MAIN_KB,
     )
-        main
 # --- Состояния мастера
 ADV_DAY, SAL_DAY, MIN_AMT, MAX_AMT, RISK = range(5)
 
@@ -173,8 +233,6 @@ async def setup_risk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         kb = ReplyKeyboardMarkup([RISK_CHOICES], resize_keyboard=True)
     if risk not in {"conservative","balanced","aggressive"}:
         kb = ReplyKeyboardMarkup([["conservative","balanced","aggressive"]], resize_keyboard=True)
-        main
-        main
         await update.message.reply_text(
             "Нажми одну из кнопок: conservative | balanced | aggressive",
             reply_markup=kb
@@ -235,7 +293,6 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 .scalar()
                 or 0.0
             )
-        main
         return await update.message.reply_text(
             f"Аванс: {u.advance_day}\nЗарплата: {u.salary_day}\n"
             f"Взносы: {fmt_amount(u.min_contrib)}-{fmt_amount(u.max_contrib)} ₽\n"
@@ -285,7 +342,6 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         amount = None
 
     if amount is not None and amount > 0:
-      main
         with SessionLocal() as s:
             u = s.get(User, update.effective_user.id)
             if not u:
@@ -293,6 +349,41 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 return await update.message.reply_text("Сначала /start", reply_markup=MAIN_KB)
             total = load_balance(s, u.user_id)
         ctx.user_data["mode"] = "adjust"
+        return await update.message.reply_text(
+            f"Сейчас учтено {fmt_amount(total)} ₽. Введи желаемый баланс, ₽."
+            " Чтобы обнулить, введи 0. Для отмены нажми «Отмена».",
+            reply_markup=ADJUST_KB,
+        )
+
+    normalized = txt.replace(" ", "").replace(",", ".")
+    try:
+        amount = float(normalized)
+    except ValueError:
+        amount = None
+
+    if mode == "contrib":
+        if amount is None or amount <= 0:
+            return await update.message.reply_text(
+                "Нужна положительная сумма в рублях. Попробуй ещё раз или нажми «Отмена».",
+                reply_markup=CONTRIB_KB,
+            )
+        return await record_manual_contribution(update, ctx, amount)
+
+    if mode == "adjust":
+        if amount is None or amount < 0:
+            return await update.message.reply_text(
+                "Нужна сумма в рублях (0 и больше). Попробуй ещё раз или нажми «Отмена».",
+                reply_markup=ADJUST_KB,
+            )
+        return await record_balance_adjustment(update, ctx, amount)
+
+    if amount is not None and amount > 0:
+        return await record_manual_contribution(update, ctx, amount)
+
+    if amount is not None:
+        return await update.message.reply_text(
+            "Сумма должна быть больше нуля. Чтобы изменить баланс, нажми «Изменить баланс».",
+            reply_markup=MAIN_KB,
         return await update.message.reply_text(
             f"Сейчас учтено {fmt_amount(total)} ₽. Введи желаемый баланс, ₽."
             " Чтобы обнулить, введи 0. Для отмены нажми «Отмена».",
@@ -357,7 +448,6 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(
             "Нужна сумма в рублях. Попробуй ещё раз или нажми «Отмена».",
             reply_markup=CONTRIB_KB,
-          main
         )
 
     return await update.message.reply_text(
