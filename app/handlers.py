@@ -91,8 +91,13 @@ async def setup_max(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def setup_risk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     risk = update.message.text
+        codex/analyze-telegram-bot-code-for-issues-rq1zbt
     if risk not in set(RISK_CHOICES):
         kb = ReplyKeyboardMarkup([RISK_CHOICES], resize_keyboard=True)
+=======
+    if risk not in {"conservative","balanced","aggressive"}:
+        kb = ReplyKeyboardMarkup([["conservative","balanced","aggressive"]], resize_keyboard=True)
+        main
         await update.message.reply_text(
             "Нажми одну из кнопок: conservative | balanced | aggressive",
             reply_markup=kb
