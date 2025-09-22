@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 from . import _requests as requests
 from ._loguru import logger
@@ -40,7 +40,7 @@ _HISTORY_TTL = timedelta(minutes=10)
 
 
 def get_key_rate() -> float:
-    """Return the current key rate using MOEX RUONIA statistics."""
+    """Return the current key rate, preferring MOEX RUONIA with CBR fallback."""
 
     global _KEY_RATE_CACHE
 
@@ -48,37 +48,15 @@ def get_key_rate() -> float:
     if _KEY_RATE_CACHE and now - _KEY_RATE_CACHE[0] < _KEY_RATE_TTL:
         return _KEY_RATE_CACHE[1]
 
-    url = "https://iss.moex.com/iss/statistics/engines/stock/markets/bonds/ruonia.json"
-    try:
-        tables = _fetch_moex_tables(url, {"iss.meta": "off", "limit": 1})
-    except requests.RequestException as exc:
-        logger.warning("Failed to fetch key rate from RUONIA: {exc}", exc=exc)
+    rate = _fetch_ruonia_key_rate()
+    if rate is None:
+        rate = _fetch_cbr_key_rate()
+
+    if rate is None:
         if _KEY_RATE_CACHE:
             return _KEY_RATE_CACHE[1]
-        raise
+        raise MarketDataError("не удалось получить ключевую ставку")
 
-    rows = tables.get("ruonia") or tables.get("data") or []
-    if not rows:
-        raise MarketDataError("нет данных RUONIA для расчёта ключевой ставки")
-
-    row = rows[0]
-    value = None
-    for field in ("RUONIA", "RUONIAINDEX", "VALUE"):
-        raw = row.get(field)
-        if isinstance(raw, (int, float)):
-            value = float(raw)
-            break
-        if isinstance(raw, str) and raw:
-            try:
-                value = float(raw.replace(",", "."))
-                break
-            except ValueError:
-                continue
-
-    if value is None:
-        raise MarketDataError("RUONIA вернулась без численного значения")
-
-    rate = value / 100 if value > 1.5 else value
     _KEY_RATE_CACHE = (now, rate)
     return rate
 
@@ -90,50 +68,59 @@ def get_inflation_est() -> float:
 def get_security_quote(ticker: str, board: str = "TQBR") -> Quote:
     """Fetch the latest quote for a MOEX-listed security."""
 
-    key = (ticker.upper(), board.upper())
+    board = board.upper()
+    key = (ticker.upper(), board)
     now = datetime.utcnow()
     cached = _QUOTE_CACHE.get(key)
     if cached and now - cached[0] < _QUOTE_CACHE_TTL:
         return cached[1]
 
-    url = f"https://iss.moex.com/iss/engines/stock/markets/shares/securities/{ticker}.json"
-    try:
-        tables = _fetch_moex_tables(url, {"iss.meta": "off"})
-    except requests.RequestException as exc:
-        raise MarketDataError(f"не удалось получить котировку {ticker}") from exc
+    last_error: Optional[Exception] = None
+    for engine, market in _market_candidates(board):
+        url = f"https://iss.moex.com/iss/engines/{engine}/markets/{market}/securities/{ticker}.json"
+        try:
+            tables = _fetch_moex_tables(url, {"iss.meta": "off"})
+        except requests.RequestException as exc:
+            last_error = exc
+            continue
 
-    securities = tables.get("securities") or []
-    marketdata = tables.get("marketdata") or []
+        securities = tables.get("securities") or []
+        marketdata = tables.get("marketdata") or []
 
-    sec_row = _find_row(securities, "BOARDID", board) or (securities[0] if securities else None)
-    md_row = _find_row(marketdata, "BOARDID", board) or (marketdata[0] if marketdata else None)
+        sec_row = _find_row(securities, "BOARDID", board) or (securities[0] if securities else None)
+        md_row = _find_row(marketdata, "BOARDID", board) or (marketdata[0] if marketdata else None)
 
-    if sec_row is None or md_row is None:
-        raise MarketDataError(f"нет данных для {ticker} ({board})")
+        if sec_row is None or md_row is None:
+            continue
 
-    price = _extract_price(md_row)
-    lot = _extract_lot(sec_row, md_row)
-    as_of = _extract_timestamp(md_row)
-    currency = (
-        sec_row.get("FACEUNIT")
-        or sec_row.get("CURRENCYID")
-        or md_row.get("CURRENCYID")
-        or "RUB"
-    )
+        price = _extract_price(md_row)
+        lot = _extract_lot(sec_row, md_row)
+        as_of = _extract_timestamp(md_row)
+        currency = (
+            sec_row.get("FACEUNIT")
+            or sec_row.get("CURRENCYID")
+            or md_row.get("CURRENCYID")
+            or "RUB"
+        )
 
-    quote = Quote(
-        ticker=ticker.upper(),
-        board=board.upper(),
-        price=price,
-        currency=currency,
-        lot=lot,
-        as_of=as_of,
-        value=_safe_float(md_row.get("VALTODAY")),
-        volume=_safe_float(md_row.get("VOLTODAY")),
-        change=_safe_float(md_row.get("LASTCHANGEPRCNT")),
-    )
-    _QUOTE_CACHE[key] = (now, quote)
-    return quote
+        quote = Quote(
+            ticker=ticker.upper(),
+            board=board,
+            price=price,
+            currency=currency,
+            lot=lot,
+            as_of=as_of,
+            value=_safe_float(md_row.get("VALTODAY")),
+            volume=_safe_float(md_row.get("VOLTODAY")),
+            change=_safe_float(md_row.get("LASTCHANGEPRCNT")),
+        )
+        _QUOTE_CACHE[key] = (now, quote)
+        return quote
+
+    message = f"не удалось получить котировку {ticker} ({board})"
+    if last_error is not None:
+        raise MarketDataError(message) from last_error
+    raise MarketDataError(message)
 
 
 def get_market_commentary() -> Optional[dict[str, str]]:
@@ -234,17 +221,18 @@ def get_security_snapshot(ticker: str) -> dict[str, Any]:
 def get_security_history(ticker: str, board: str, days: int = 260) -> list[dict[str, Any]]:
     """Fetch historical trading data for the given security."""
 
-    key = (ticker.upper(), board.upper(), days)
+    board = board.upper()
+    key = (ticker.upper(), board, days)
     now = datetime.utcnow()
     cached = _HISTORY_CACHE.get(key)
     if cached and now - cached[0] < _HISTORY_TTL:
         return cached[1]
 
-    markets = _market_candidates(board)
+    routes = _market_candidates(board)
     cutoff = (datetime.utcnow() - timedelta(days=days * 2)).date()
     collected: list[dict[str, Any]] = []
 
-    for market in markets:
+    for engine, market in routes:
         start = 0
         while True:
             params = {
@@ -253,8 +241,8 @@ def get_security_history(ticker: str, board: str, days: int = 260) -> list[dict[
                 "start": start,
             }
             url = (
-                "https://iss.moex.com/iss/history/engines/stock/markets/"
-                f"{market}/securities/{ticker}.json"
+                "https://iss.moex.com/iss/history/engines/"
+                f"{engine}/markets/{market}/securities/{ticker}.json"
             )
             try:
                 tables = _fetch_moex_tables(url, params)
@@ -403,20 +391,80 @@ def _safe_float(value: Any) -> Optional[float]:
     return None
 
 
-def _market_candidates(board: str) -> list[str]:
-    mapping = {
-        "TQBR": ["shares"],
-        "TQTF": ["shares", "etf"],
-        "TQTD": ["shares"],
-        "TQOB": ["bonds"],
-        "TQCB": ["bonds"],
-        "TQOD": ["bonds"],
-        "SMAL": ["shares"],
-        "FQBR": ["shares"],
-        "TOM": ["currencies"],
-        "SNDX": ["index"],
+def _market_candidates(board: str) -> list[Tuple[str, str]]:
+    mapping: dict[str, list[Tuple[str, str]]] = {
+        "TQBR": [("stock", "shares")],
+        "TQTD": [("stock", "shares")],
+        "SMAL": [("stock", "shares")],
+        "FQBR": [("stock", "shares")],
+        "TQTF": [("stock", "etf"), ("stock", "shares")],
+        "TQOB": [("stock", "bonds")],
+        "TQCB": [("stock", "bonds")],
+        "TQOD": [("stock", "bonds")],
+        "SNDX": [("stock", "index")],
+        "TOM": [("currency", "selt"), ("currency", "spot")],
     }
     candidates = mapping.get(board.upper())
     if candidates:
         return candidates
-    return ["shares", "bonds", "etf", "index", "foreignshares", "currencies"]
+    return [
+        ("stock", "shares"),
+        ("stock", "etf"),
+        ("stock", "bonds"),
+        ("stock", "index"),
+        ("currency", "selt"),
+    ]
+
+
+def _fetch_ruonia_key_rate() -> Optional[float]:
+    url = "https://iss.moex.com/iss/statistics/engines/stock/markets/bonds/ruonia.json"
+    try:
+        tables = _fetch_moex_tables(url, {"iss.meta": "off", "limit": 1})
+    except requests.RequestException as exc:
+        logger.warning("Failed to fetch key rate from RUONIA: {exc}", exc=exc)
+        return None
+
+    rows = tables.get("ruonia") or tables.get("data") or []
+    if not rows:
+        logger.warning("RUONIA payload did not contain data rows")
+        return None
+
+    row = rows[0]
+    value: Optional[float] = None
+    for field in ("RUONIA", "RUONIAINDEX", "VALUE"):
+        raw = row.get(field)
+        if isinstance(raw, (int, float)):
+            value = float(raw)
+            break
+        if isinstance(raw, str) and raw:
+            try:
+                value = float(raw.replace(",", "."))
+                break
+            except ValueError:
+                continue
+
+    if value is None:
+        logger.warning("RUONIA payload missing numeric value")
+        return None
+
+    return value / 100 if value > 1.5 else value
+
+
+def _fetch_cbr_key_rate() -> Optional[float]:
+    url = "https://www.cbr-xml-daily.ru/daily_json.js"
+    try:
+        response = _http_get(url)
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException as exc:
+        logger.warning("Failed to fetch key rate from CBR: {exc}", exc=exc)
+        return None
+
+    raw = payload.get("KeyRate") or payload.get("key_rate")
+    if raw in (None, ""):
+        return None
+    try:
+        value = float(str(raw).replace(",", "."))
+    except ValueError:
+        return None
+    return value / 100 if value > 1.5 else value

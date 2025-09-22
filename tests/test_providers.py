@@ -42,6 +42,26 @@ def test_get_key_rate_fetches_ruonia():
 
 
 @responses.activate
+def test_get_key_rate_falls_back_to_cbr():
+    responses.add(
+        responses.GET,
+        "https://iss.moex.com/iss/statistics/engines/stock/markets/bonds/ruonia.json",
+        status=404,
+        json={},
+    )
+    responses.add(
+        responses.GET,
+        "https://www.cbr-xml-daily.ru/daily_json.js",
+        json={"KeyRate": "16"},
+    )
+
+    rate = providers.get_key_rate()
+
+    assert pytest.approx(rate, rel=1e-6) == 0.16
+    assert len(responses.calls) == 2
+
+
+@responses.activate
 def test_get_index_value_parses_payload():
     responses.add(
         responses.GET,
@@ -74,6 +94,30 @@ def test_get_security_history_aggregates_rows():
     assert len(history) == 2
     assert history[0]["TRADEDATE"] == "2024-09-01"
     providers.get_security_history("SBER", "TQBR", days=5)
+    assert len(responses.calls) == 1
+
+
+@responses.activate
+def test_get_security_quote_uses_board_specific_market():
+    responses.add(
+        responses.GET,
+        "https://iss.moex.com/iss/engines/stock/markets/etf/securities/FXIT.json",
+        json={
+            "securities": [{"BOARDID": "TQTF", "FACEUNIT": "USD", "LOTSIZE": 1}],
+            "marketdata": [
+                {
+                    "BOARDID": "TQTF",
+                    "LAST": 80.5,
+                    "SYSTIME": "2024-10-01 12:00:00",
+                }
+            ],
+        },
+    )
+
+    quote = providers.get_security_quote("FXIT", "TQTF")
+
+    assert quote.board == "TQTF"
+    assert quote.price == pytest.approx(80.5)
     assert len(responses.calls) == 1
 
 
