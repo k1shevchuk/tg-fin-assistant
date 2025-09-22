@@ -1,7 +1,46 @@
-.env
+# виртуалки
 venv/
+.venv/
+env/
+path/to/venv/
+
+# питон-мусор
 __pycache__/
-*.pyc
-data.db
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
 *.log
-.DS_Store
+.logs/
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.python-version
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# секреты и локальные конфиги
+.env
+.env.*
+*.pem
+*.key
+id_rsa*
+secrets/
+
+# БД и локальные хранилища
+*.db
+*.sqlite3
+
+# Telegram/Telethon/Pyrogram сессии
+*.session
+*.session-journal
