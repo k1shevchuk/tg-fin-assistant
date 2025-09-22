@@ -38,7 +38,9 @@ def test_format_idea_plan_details_includes_key_blocks():
 
     formatted = format_idea_plan_details(idea)
 
-    assert "Горизонт: 120 дн." in formatted
-    assert "Источники: [1] MOEX котировки (2024-01-10)" in formatted
-    assert "Уверенность: средняя (скор 0.72)" in formatted
-    assert "Риски: волатильность цен на нефть" in formatted
+    assert "Цена: 205.00 RUB" in formatted
+    assert "Диапазон покупки: 200.00–210.00 RUB" in formatted
+    assert "Рост: 72% (скор 0.72)" in formatted
+    assert "Уверенность: средняя" in formatted
+    assert "Риск: волатильность цен на нефть" in formatted
+    assert "Источник: MOEX котировки (2024-01-10) — https://moex.com/sber" in formatted

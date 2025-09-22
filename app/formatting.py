@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from __future__ import annotations
-
 from datetime import datetime
 from textwrap import shorten
 from typing import Iterable
@@ -26,34 +24,39 @@ def fmt_signed(value: float, precision: int = 0) -> str:
 def format_idea(idea: "Idea") -> str:
     from .ideas import Idea
 
-    header = f"[{idea.asset_type.upper()}] {idea.ticker} @ {idea.board}"
-    thesis = f"Тезис: {idea.thesis}"
-    catalyst = f"Катализаторы/горизонт: {idea.horizon_days} дней"
+    currency = idea.metrics.get("currency") or "RUB"
+    price = idea.metrics.get("price")
+    if isinstance(price, (int, float)):
+        price_text = f"{fmt_amount(float(price), 2)} {currency}"
+    else:
+        price_text = "нет данных"
 
     entry_low, entry_high = idea.entry_range
-    currency = idea.metrics.get("currency") or "RUB"
-    entry = (
-        f"Вход/риск: {fmt_amount(entry_low, 2)}–{fmt_amount(entry_high, 2)} {currency}; "
-        f"стоп: {fmt_amount(idea.stop_hint, 2)} {currency}"
+    entry_line = (
+        f"Диапазон покупки: {fmt_amount(entry_low, 2)}–{fmt_amount(entry_high, 2)} {currency}"
     )
 
-    metrics_line = _render_metrics(idea.metrics)
-    risks_line = "Риски: " + (", ".join(idea.risks) if idea.risks else "-" )
-    sources_line = "Источники: " + _render_sources(idea.sources)
-    confidence = f"Уверенность: { _confidence_ru(idea.confidence) }"
+    probability = _format_probability(idea.metrics.get("score"))
+    confidence = _confidence_ru(idea.confidence)
+    summary = shorten(idea.thesis, width=160, placeholder="…") if idea.thesis else ""
+    risk = idea.risks[0] if idea.risks else ""
+    source = _render_primary_source(idea.sources)
 
-    return "\n".join(
-        [
-            header,
-            thesis,
-            catalyst,
-            entry,
-            f"Метрики: {metrics_line}",
-            risks_line,
-            sources_line,
-            confidence,
-        ]
-    )
+    lines = [
+        f"{idea.ticker} ({idea.board}) — {price_text}",
+        f"Горизонт: {idea.horizon_days} дн.",
+        entry_line,
+        f"Рост: {probability}; уверенность: {confidence}",
+    ]
+
+    if summary:
+        lines.append(f"Комментарий: {summary}")
+    if risk:
+        lines.append(f"Риск: {risk}")
+    if source:
+        lines.append(f"Источник: {source}")
+
+    return "\n".join(lines)
 
 
 def format_idea_digest(idea: "Idea") -> str:
@@ -67,35 +70,34 @@ def format_idea_digest(idea: "Idea") -> str:
 def format_idea_plan_details(idea: "Idea") -> str:
     from .ideas import Idea
 
-    entry_low, entry_high = idea.entry_range
     currency = idea.metrics.get("currency") or "RUB"
-    thesis = shorten(idea.thesis, width=180, placeholder="…") if idea.thesis else ""
-    entry = (
-        f"  Горизонт: {idea.horizon_days} дн.; вход {fmt_amount(entry_low, 2)}–{fmt_amount(entry_high, 2)} {currency}; "
-        f"стоп {fmt_amount(idea.stop_hint, 2)} {currency}"
+    price = idea.metrics.get("price")
+    if isinstance(price, (int, float)):
+        price_line = f"  Цена: {fmt_amount(float(price), 2)} {currency}"
+    else:
+        price_line = "  Цена: нет данных"
+
+    entry_low, entry_high = idea.entry_range
+    entry_line = (
+        f"  Диапазон покупки: {fmt_amount(entry_low, 2)}–{fmt_amount(entry_high, 2)} {currency}"
     )
 
-    lines = []
-    if thesis:
-        lines.append(f"  Тезис: {thesis}")
-    lines.append(entry)
-
-    metrics_line = _render_metrics(idea.metrics)
-    if metrics_line and metrics_line != "-":
-        lines.append(f"  Метрики: {metrics_line}")
-
-    risks = ", ".join(idea.risks) if idea.risks else "-"
-    lines.append(f"  Риски: {risks}")
-
-    sources = _render_sources(idea.sources, limit=2)
-    lines.append(f"  Источники: {sources}")
-
+    probability = _format_probability(idea.metrics.get("score"))
     confidence = _confidence_ru(idea.confidence)
-    score = idea.metrics.get("score")
-    if isinstance(score, (int, float)):
-        lines.append(f"  Уверенность: {confidence} (скор {float(score):.2f})")
-    else:
-        lines.append(f"  Уверенность: {confidence}")
+
+    lines = [
+        price_line,
+        entry_line,
+        f"  Рост: {probability}",
+        f"  Уверенность: {confidence}",
+    ]
+
+    if idea.risks:
+        lines.append(f"  Риск: {idea.risks[0]}")
+
+    source = _render_primary_source(idea.sources)
+    if source:
+        lines.append(f"  Источник: {source}")
 
     return "\n".join(lines)
 
@@ -151,3 +153,24 @@ def _render_sources(sources: Iterable["IdeaSource"], limit: int | None = None) -
 def _confidence_ru(value: str) -> str:
     mapping = {"low": "низкая", "mid": "средняя", "high": "высокая"}
     return mapping.get(value, value)
+
+
+def _format_probability(score: object) -> str:
+    if isinstance(score, (int, float)):
+        value = max(0.0, min(1.0, float(score)))
+        return f"{value * 100:.0f}% (скор {value:.2f})"
+    return "нет данных"
+
+
+def _render_primary_source(sources: Iterable["IdeaSource"]) -> str:
+    from .sources import IdeaSource
+
+    first = next(iter(sources), None)
+    if not isinstance(first, IdeaSource):
+        return ""
+    date = (
+        first.date.strftime("%Y-%m-%d")
+        if isinstance(first.date, datetime)
+        else str(first.date)
+    )
+    return f"{first.name} ({date}) — {first.url}"
