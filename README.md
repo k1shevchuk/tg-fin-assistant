@@ -56,14 +56,23 @@ pip install -r requirements.txt
 Создайте .env в корне:
 
 BOT_TOKEN=ваш_токен_от_BotFather
+
 TZ=Europe/Moscow
+
 IDEAS_MIN_SOURCES=2
+
 IDEAS_MAX_AGE_DAYS=90
+
 IDEAS_TOPN=5
+
 IDEAS_SCORE_THRESHOLD=0.6
+
 TWELVEDATA_API_KEY= # опционально, ключ Twelve Data
+
 FINNHUB_API_KEY=    # опционально, ключ Finnhub
+
 HTTP_TIMEOUT_SEC=5
+
 CACHE_TTL_SEC=10
 
 4. Локальный запуск
@@ -76,16 +85,22 @@ python -m app.main
 [Unit]
 Description=Telegram Finance Assistant Bot
 After=network.target
-
 [Service]
+
 User=tgfinance
+
 WorkingDirectory=/home/tgfinance/tg-fin-assistant
+
 Environment="PATH=/home/tgfinance/tg-fin-assistant/venv/bin"
+
 ExecStart=/home/tgfinance/tg-fin-assistant/venv/bin/python -m app.main
+
 Restart=always
+
 RestartSec=5
 
 [Install]
+
 WantedBy=multi-user.target
 
 
@@ -176,6 +191,7 @@ sudo systemctl restart tgfinance
 Отдельный чат с промптом = стратегия (сценарии, анализ макроэкономики, конкретные активы).
 
 Вместе они работают как полноценный финансовый помощник.
+
 
 
 
