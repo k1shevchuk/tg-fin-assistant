@@ -29,6 +29,7 @@ class SourceRoute:
     engine: Optional[str] = None
     reason: Optional[str] = None
     currency: Optional[str] = None
+    is_traded: Optional[bool] = None
 
 
 @dataclass(slots=True)
@@ -64,16 +65,13 @@ _CBR_URL = "https://www.cbr-xml-daily.ru/daily_json.js"
 
 _CRYPTO_PAIR_RE = re.compile(r"^[A-Z]{3,10}(USDT|BTC|BUSD)$")
 _ALWAYS_AGGREGATOR: dict[str, dict[str, str]] = {
-    "FXIT": {"symbol": "FXIT.MOEX", "currency": "SUR", "reason": "delisted_from_moex"},
-    "FXWO": {"symbol": "FXWO.MOEX", "currency": "SUR", "reason": "delisted_from_moex"},
-    "FXGD": {"symbol": "FXGD.MOEX", "currency": "SUR", "reason": "delisted_from_moex"},
-    "FXRB": {"symbol": "FXRB.MOEX", "currency": "SUR", "reason": "delisted_from_moex"},
     "YNDX": {"symbol": "YNDX.US", "currency": "USD", "reason": "moex_delisting_announced"},
 }
 
 _CACHE_TTL = timedelta(seconds=settings.CACHE_TTL_SEC)
 _QUOTE_CACHE: dict[str, tuple[datetime, Quote]] = {}
 _SECURITY_CACHE: dict[str, tuple[datetime, dict[str, list[dict[str, Any]]]]] = {}
+_BOARD_CACHE: dict[str, tuple[datetime, list[dict[str, Any]]]] = {}
 _HISTORY_CACHE: dict[tuple[str, str, int], tuple[datetime, list[dict[str, Any]]]] = {}
 _KEY_RATE_CACHE: tuple[datetime, float] | None = None
 _KEY_RATE_TTL = timedelta(hours=1)
@@ -143,7 +141,7 @@ def resolve_source(ticker: str) -> SourceRoute:
         )
 
     try:
-        tables = _get_security_tables(symbol)
+        boards = _get_security_boards(symbol)
     except _NotFoundError:
         fallback = _aggregator_route(symbol, "unknown_ticker")
         if fallback:
@@ -156,30 +154,21 @@ def resolve_source(ticker: str) -> SourceRoute:
             return fallback
         raise MarketDataError("не удалось определить источник котировки") from exc
 
-    boards = tables.get("boards") or []
-    board_row = _pick_traded_board(boards)
-    if board_row:
-        board_code = str(board_row.get("boardid") or board_row.get("board") or "").upper() or None
-        market = str(board_row.get("market") or "shares").lower()
-        engine = str(board_row.get("engine") or "stock").lower()
+    board_info = _select_board(symbol, boards)
+    if board_info:
+        board_code, engine, market, is_traded = board_info
+        reason = None if is_traded else "no_active_trading_on_moex"
+        if symbol.startswith("FX"):
+            market = "shares"
         return SourceRoute(
             name="MOEX",
             symbol=symbol,
             board=board_code,
-            market=market,
-            engine=engine,
+            market=market or "shares",
+            engine=engine or "stock",
             currency="SUR",
-        )
-
-    if boards:
-        fallback = _aggregator_route(symbol, "no_active_trading_on_moex")
-        if fallback:
-            return fallback
-        return SourceRoute(
-            name="MOEX",
-            symbol=symbol,
-            reason="no_active_trading_on_moex",
-            currency="SUR",
+            reason=reason,
+            is_traded=is_traded,
         )
 
     fallback = _aggregator_route(symbol, "unknown_ticker")
@@ -219,7 +208,9 @@ def get_quote(ticker: str) -> Quote:
         _QUOTE_CACHE[cache_key] = (now, quote)
     return quote
 
-def get_daily_close_moex(secid: str, board: str, market: str, day: date) -> Optional[float]:
+def get_daily_close_moex(
+    secid: str, board: str, market: str, day: date, engine: str = "stock"
+) -> Optional[float]:
     """Return end-of-day close for the specified security."""
 
     params = {
@@ -228,7 +219,7 @@ def get_daily_close_moex(secid: str, board: str, market: str, day: date) -> Opti
         "till": day.isoformat(),
     }
     url = (
-        f"{_MOEX_BASE}/history/engines/stock/markets/{market}/boards/{board}/"
+        f"{_MOEX_BASE}/history/engines/{engine}/markets/{market}/boards/{board}/"
         f"securities/{secid}.json"
     )
     try:
@@ -248,6 +239,42 @@ def get_daily_close_moex(secid: str, board: str, market: str, day: date) -> Opti
 
     last = rows[-1]
     for field in ("CLOSE", "LEGALCLOSEPR", "LCLOSEPRICE"):
+        value = _safe_float(last.get(field))
+        if value is not None:
+            return value
+    return None
+
+
+def _fetch_history_last_price(
+    ticker: str, board: str, engine: str, market: str
+) -> Optional[float]:
+    params = {"iss.meta": "off", "iss.only": "history"}
+    url = (
+        f"{_MOEX_BASE}/history/engines/{engine}/markets/{market}/boards/{board}/"
+        f"securities/{ticker}.json"
+    )
+    try:
+        response = _http_get(url, params=params)
+    except requests.RequestException as exc:
+        logger.warning(
+            "History fallback failed for {ticker} {board}: {exc}",
+            ticker=ticker,
+            board=board,
+            exc=exc,
+        )
+        return None
+
+    if getattr(response, "status_code", 200) == 404:
+        return None
+
+    response.raise_for_status()
+    tables = _parse_iss_tables(response.json())
+    rows = tables.get("history") or []
+    if not rows:
+        return None
+
+    last = rows[-1]
+    for field in ("CLOSE", "LEGALCLOSEPR", "LCLOSEPRICE", "LAST"):
         value = _safe_float(last.get(field))
         if value is not None:
             return value
@@ -412,14 +439,14 @@ def get_security_history(ticker: str, board: str, days: int = 260) -> list[dict[
     return collected
 
 def _get_moex_quote(ticker: str, route: SourceRoute) -> Quote:
-    if not route.board or not route.market:
+    if not route.board:
         return Quote(
             ticker=ticker,
             price=None,
-            currency=route.currency or "SUR",
+            currency=_normalize_currency_code(route.currency or "SUR"),
             ts_utc=None,
             source="MOEX",
-            board=route.board,
+            board=None,
             market=route.market,
             reason=route.reason or "no_active_trading_on_moex",
         )
@@ -428,61 +455,116 @@ def _get_moex_quote(ticker: str, route: SourceRoute) -> Quote:
     securities = tables.get("securities") or []
     sec_row = securities[0] if securities else {}
 
-    params = {"iss.meta": "off", "iss.only": "marketdata"}
-    engine = route.engine or "stock"
-    url = (
-        f"{_MOEX_BASE}/engines/{engine}/markets/{route.market}/"
-        f"boards/{route.board}/securities/{ticker}.json"
-    )
-    response = _http_get(url, params=params)
-    response.raise_for_status()
-    md_tables = _parse_iss_tables(response.json())
-    marketdata = md_tables.get("marketdata") or []
-    md_row = _find_row_by_board(marketdata, route.board) or (marketdata[0] if marketdata else {})
+    engine = (route.engine or "stock").lower()
+    market = (route.market or "shares").lower()
+    if ticker.upper().startswith("FX"):
+        market = "shares"
 
-    price = _extract_price(md_row)
-    lot = _extract_lot(sec_row, md_row)
-    timestamp = _extract_timestamp(md_row)
-    change = _safe_float(md_row.get("LASTCHANGEPRCNT"))
-    volume = _safe_float(md_row.get("VOLTODAY"))
-    value = _safe_float(md_row.get("VALTODAY"))
-    currency = _extract_currency(sec_row, md_row)
+    lot = None
+    change = None
+    volume = None
+    value = None
+    timestamp: Optional[datetime] = None
+    price: Optional[float] = None
+    currency_code = _extract_currency(sec_row, {}) or route.currency or "SUR"
     reason = route.reason
+    context: Optional[str] = None
+
+    if route.is_traded is not False:
+        params = {"iss.meta": "off", "iss.only": "marketdata"}
+        url = (
+            f"{_MOEX_BASE}/engines/{engine}/markets/{market}/"
+            f"boards/{route.board}/securities/{ticker}.json"
+        )
+        try:
+            response = _http_get(url, params=params)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            logger.warning(
+                "Marketdata fetch failed for {ticker} {board}: {exc}",
+                ticker=ticker,
+                board=route.board,
+                exc=exc,
+            )
+        else:
+            md_tables = _parse_iss_tables(response.json())
+            marketdata = md_tables.get("marketdata") or []
+            md_row = _find_row_by_board(marketdata, route.board) or (
+                marketdata[0] if marketdata else {}
+            )
+
+            price = _extract_price(md_row)
+            lot = _extract_lot(sec_row, md_row)
+            timestamp = _extract_timestamp(md_row)
+            change = _safe_float(md_row.get("LASTCHANGEPRCNT"))
+            volume = _safe_float(md_row.get("VOLTODAY"))
+            value = _safe_float(md_row.get("VALTODAY"))
+            currency_code = _extract_currency(sec_row, md_row) or currency_code
 
     if price is None:
-        close = get_daily_close_moex(ticker, route.board, route.market, _now().date())
-        if close is None:
-            return Quote(
-                ticker=ticker,
-                price=None,
-                currency=currency,
-                ts_utc=None,
-                source="MOEX",
-                board=route.board,
-                market=route.market,
-                reason=reason or "no_trades_no_history",
-                lot=lot,
-                change=change,
-                volume=volume,
-                value=value,
-            )
-        price = close
-        reason = "eod_close_fallback"
+        if route.is_traded:
+            close = get_daily_close_moex(ticker, route.board, market, _now().date(), engine)
+            if close is not None:
+                price = close
+                if route.reason and route.reason != "eod_close_fallback":
+                    context = route.reason
+                reason = "eod_close_fallback"
+        elif route.board and market:
+            history_price = _fetch_history_last_price(ticker, route.board, engine, market)
+            if history_price is not None:
+                price = history_price
+                if route.reason and route.reason != "stale_price":
+                    context = route.reason
+                reason = "stale_price"
+            else:
+                return Quote(
+                    ticker=ticker,
+                    price=None,
+                    currency=_normalize_currency_code(currency_code),
+                    ts_utc=None,
+                    source="MOEX",
+                    board=route.board,
+                    market=market,
+                    reason="delisted_from_moex",
+                    lot=lot,
+                    change=change,
+                    volume=volume,
+                    value=value,
+                    context=route.reason,
+                )
+
+    if price is None:
+        return Quote(
+            ticker=ticker,
+            price=None,
+            currency=_normalize_currency_code(currency_code),
+            ts_utc=None,
+            source="MOEX",
+            board=route.board,
+            market=market,
+            reason=reason or "no_trades_no_history",
+            lot=lot,
+            change=change,
+            volume=volume,
+            value=value,
+            context=context if context else route.reason,
+        )
 
     ts_iso = timestamp.isoformat().replace("+00:00", "Z") if timestamp else _now_iso()
     return Quote(
         ticker=ticker,
         price=price,
-        currency=currency,
+        currency=_normalize_currency_code(currency_code),
         ts_utc=ts_iso,
         source="MOEX",
         board=route.board,
-        market=route.market,
+        market=market,
         reason=reason,
         lot=lot,
         change=change,
         volume=volume,
         value=value,
+        context=context if context else route.reason,
     )
 
 
@@ -693,6 +775,25 @@ def _get_security_tables(ticker: str) -> dict[str, list[dict[str, Any]]]:
     return tables
 
 
+def _get_security_boards(ticker: str) -> list[dict[str, Any]]:
+    key = ticker.upper()
+    now = _now()
+    cached = _BOARD_CACHE.get(key)
+    if cached and now - cached[0] < _CACHE_TTL:
+        return cached[1]
+
+    params = {"iss.meta": "off", "iss.only": "boards"}
+    url = f"{_MOEX_BASE}/securities/{key}.json"
+    response = _http_get(url, params=params)
+    if getattr(response, "status_code", 200) == 404:
+        raise _NotFoundError()
+    response.raise_for_status()
+    tables = _parse_iss_tables(response.json())
+    boards = tables.get("boards") or []
+    _BOARD_CACHE[key] = (now, boards)
+    return boards
+
+
 def _fetch_moex_tables(
     url: str, params: Optional[dict[str, Any]] = None
 ) -> dict[str, list[dict[str, Any]]]:
@@ -748,6 +849,15 @@ def _clean_str(value: Any) -> Optional[str]:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _normalize_currency_code(code: Optional[str]) -> str:
+    if code is None:
+        return "RUB"
+    upper = str(code).upper()
+    if upper in {"SUR", "RUR"}:
+        return "RUB"
+    return upper
 
 
 def _extract_currency(sec_row: dict[str, Any], md_row: dict[str, Any]) -> str:
@@ -824,14 +934,45 @@ def _find_row_by_board(rows: list[dict[str, Any]], board: str) -> Optional[dict[
     return None
 
 
-def _pick_traded_board(rows: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+def _select_board(ticker: str, rows: list[dict[str, Any]]) -> Optional[tuple[str, str, str, bool]]:
+    if not rows:
+        return None
+
+    normalized: list[tuple[str, str, str, bool]] = []
     for row in rows:
-        value = row.get("is_traded")
-        if value is None:
-            value = row.get("IS_TRADED")
-        if _is_true(value):
-            return row
-    return None
+        board_code = str(row.get("boardid") or row.get("board") or "").upper()
+        if not board_code:
+            continue
+        engine = str(row.get("engine") or "stock").lower() or "stock"
+        market = str(row.get("market") or "shares").lower() or "shares"
+        is_traded = _is_true(row.get("is_traded") or row.get("IS_TRADED"))
+        normalized.append((board_code, engine, market, is_traded))
+
+    if not normalized:
+        return None
+
+    ticker_upper = ticker.upper()
+    is_fx = ticker_upper.startswith("FX")
+
+    if is_fx:
+        for info in normalized:
+            if info[0] == "MTQR" and info[3]:
+                return info[0], info[1], "shares", True
+        for info in normalized:
+            if info[3] and info[2] == "shares":
+                return info[0], info[1], "shares", True
+        for info in normalized:
+            if info[0] == "MTQR":
+                return info[0], info[1], "shares", info[3]
+        for info in normalized:
+            if info[2] == "shares":
+                return info[0], info[1], "shares", info[3]
+
+    for info in normalized:
+        if info[3]:
+            return info
+
+    return normalized[0]
 
 
 def _is_true(value: Any) -> bool:

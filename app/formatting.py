@@ -181,6 +181,7 @@ _QUOTE_REASON_MESSAGES = {
     "delisted_from_moex": "инструмент делистингован на MOEX",
     "moex_delisting_announced": "MOEX объявил делистинг, используем внешний источник",
     "eod_close_fallback": "нет сделок сейчас, показано закрытие дня",
+    "stale_price": "использована последняя доступная цена с MOEX",
     "no_trades_no_history": "нет свежих сделок и истории по инструменту",
     "missing_api_key": "нет API ключа для агрегатора",
     "upstream_unavailable": "внешний источник временно недоступен",

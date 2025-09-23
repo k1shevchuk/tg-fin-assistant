@@ -169,8 +169,10 @@ def propose_allocation(amount: float, risk: str) -> AllocationAdvice:
                 line.note = "ошибка при получении котировки"
             else:
                 line.quote = quote
-                if quote.price is None or quote.lot in (None, 0):
+                if quote.price is None or quote.price <= 0:
                     line.note = line.note or "котировка недоступна"
+                elif quote.lot in (None, 0):
+                    pass
                 else:
                     lot_cost = Decimal(str(quote.price)) * Decimal(quote.lot)
                     if lot_cost > 0:
