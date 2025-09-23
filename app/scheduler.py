@@ -8,6 +8,7 @@ from .db import SessionLocal
 from .formatting import fmt_amount, format_idea_digest
 from .ideas import generate_ideas, rank_and_filter
 from .models import User
+from .formatting import fmt_amount
 from .strategy import propose_allocation
 
 def setup_jobs(app: Application, tz: str):
