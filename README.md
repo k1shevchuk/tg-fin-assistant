@@ -124,6 +124,51 @@ journalctl -u tgfinance -f
 
 Ежедневно в 10:30 бот отправляет краткий дайджест 3–5 лучших идей с ссылками на источники.
 
+Эксплуатация
+-----------
+
+### Предпосылки
+
+- Ubuntu/Debian с systemd
+- Python 3.12+ и virtualenv (`python3 -m venv`)
+- Установленные `git`, `curl`, `jq`
+- Рабочий каталог проекта: `/home/tgfinance/tg-fin-assistant`
+
+### Обновление после pull request
+
+```bash
+cd ~/tg-fin-assistant
+git pull --rebase
+source venv/bin/activate
+pip install -r requirements.txt
+python -m compileall app
+pytest -q  # опционально, если доступен тестовый контур
+deactivate
+```
+
+### Перезапуск и контроль
+
+```bash
+sudo systemctl restart tgfinance
+sudo systemctl status tgfinance
+journalctl -u tgfinance -f
+```
+
+Если бот не стартует, проверьте `.env`, токен бота и логи systemd. Для отката можно выполнить `git reset --hard HEAD~1`, повторить установку зависимостей и перезапустить сервис.
+
+### Обновление фильтра T‑Банка
+
+`data/tbank_universe.yml` задаёт список доступных в Т‑Банке инструментов. Для импорта CSV используйте:
+
+```bash
+source venv/bin/activate
+python -m scripts.import_tbank_universe my_universe.csv
+deactivate
+sudo systemctl restart tgfinance
+```
+
+При отсутствии файла бот разрешит все бумаги и запишет INFO‑сообщение в лог.
+
 В связке с аналитиком
 
 Этот бот = дисциплина (напоминания, фиксация взносов).

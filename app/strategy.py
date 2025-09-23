@@ -4,6 +4,8 @@ from dataclasses import dataclass, replace
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from typing import Optional
 
+from .brokers import tinkoff_filter
+from .config import settings
 from .providers import (
     MarketDataError,
     Quote,
@@ -161,6 +163,25 @@ def propose_allocation(amount: float, risk: str) -> AllocationAdvice:
         )
 
         if asset.type != "cash" and asset.ticker:
+            sec_type = _classify_security(asset)
+            if (
+                settings.TINKOFF_FILTER_ENABLED
+                and sec_type is not None
+                and not tinkoff_filter.is_tradable(asset.ticker, sec_type)
+            ):
+                line.note = "Недоступно в Т-Банке"
+                line.quote = Quote(
+                    ticker=asset.ticker.upper(),
+                    price=None,
+                    currency="RUB",
+                    ts_utc=None,
+                    source="UNKNOWN",
+                    reason="not_available_in_tbank",
+                    board=(asset.board or "TQBR").upper(),
+                )
+                plan.append(line)
+                continue
+
             try:
                 quote = get_quote(asset.ticker)
             except MarketDataError:
@@ -200,6 +221,21 @@ def propose_allocation(amount: float, risk: str) -> AllocationAdvice:
 
 
 # --- Internal helpers --------------------------------------------------------
+
+def _classify_security(asset: PortfolioAsset) -> str | None:
+    if asset.type == "cash" or not asset.ticker:
+        return None
+
+    ticker = asset.ticker.upper()
+    if asset.tag in {"gold", "alternatives"}:
+        return None
+    if asset.tag == "bonds" or ticker.startswith("SU"):
+        return "bond"
+    board = (asset.board or "").upper()
+    if board in {"TQTF", "TQTD", "SPBEX"} or ticker.startswith("FX"):
+        return "etf"
+    return "stock"
+
 
 def _apply_rate_shift(
     assets: list[PortfolioAsset],

@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     FINNHUB_API_KEY: str | None = None
     HTTP_TIMEOUT_SEC: float = Field(default=5.0, gt=0)
     CACHE_TTL_SEC: int = Field(default=10, ge=1)
+    TINKOFF_FILTER_ENABLED: bool = True
+    TINKOFF_UNIVERSE_PATH: str = "data/tbank_universe.yml"
 
     model_config = SettingsConfigDict(env_file=".env")
 

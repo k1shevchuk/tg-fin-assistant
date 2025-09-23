@@ -229,47 +229,40 @@ async def record_manual_contribution(update: Update, ctx: ContextTypes.DEFAULT_T
                 continue
 
             price_for_display = False
-            unavailable_reason_codes = {
-                "moex_delisting_announced",
-                "unknown_ticker",
-                "no_active_trading_on_moex",
-            }
 
             if line.quote:
                 source_label = _format_quote_source(line.quote)
                 if source_label:
                     quote_sources.add(source_label)
 
-                price_value = line.quote.price if isinstance(line.quote.price, (int, float)) else None
-                reason_code = (line.quote.reason or "").strip()
-                price_for_display = (
-                    price_value is not None
-                    and price_value > 0
-                    and reason_code not in unavailable_reason_codes
-                )
-
-                if price_for_display:
-                    price = fmt_amount(price_value, precision=2)
-                    currency = _currency_label(line.quote.currency)
+                price_raw = line.quote.price if isinstance(line.quote.price, (int, float)) else None
+                reason_text = describe_quote_reason(line.quote.reason, line.quote.context)
+                currency = _currency_label(line.quote.currency)
+                if price_raw is not None and price_raw > 0:
+                    price_for_display = True
+                    section_lines.append(
+                        f"  Цена: {fmt_amount(float(price_raw), precision=2)} {currency}"
+                    )
                     if line.lots:
                         invested = line.invested or 0.0
-                        info = (
-                            f"  {line.lots} лот × {line.quote.lot or 1} шт = {line.units or 0} шт по {price} {currency}"
+                        section_lines.append(
+                            "  Покупка: "
+                            f"{line.lots} лот × {line.quote.lot or 1} шт = {line.units or 0} шт"
                             f" → {fmt_amount(invested, precision=2)} {currency}"
                         )
                         if line.leftover and line.leftover >= 1:
-                            info += f" (остаток {fmt_amount(line.leftover)} {currency})"
-                        section_lines.append(info)
+                            section_lines.append(
+                                f"  Остаток: {fmt_amount(line.leftover, precision=2)} {currency}"
+                            )
                     else:
                         section_lines.append(
-                            f"  Цена {price} {currency} за бумагу. Отложим {fmt_amount(line.amount)} {currency}, пока не хватит на целый лот."
+                            f"  Покупка: копим {fmt_amount(line.amount)} {currency} до полного лота"
                         )
+                    if reason_text and line.quote.reason == "stale_price":
+                        section_lines.append(f"  Примечание: {reason_text}")
                 else:
-                    note_text = line.note or describe_quote_reason(
-                        line.quote.reason, line.quote.context
-                    )
-                    if note_text:
-                        section_lines.append(f"  Примечание: {note_text}")
+                    note_text = line.note or reason_text or "котировка недоступна"
+                    section_lines.append(f"  Примечание: {note_text}")
             else:
                 note = line.note or "котировка недоступна"
                 section_lines.append(f"  Примечание: {note}")

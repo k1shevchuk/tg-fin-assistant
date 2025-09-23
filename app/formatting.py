@@ -72,10 +72,6 @@ def format_idea_plan_details(idea: "Idea") -> str:
 
     currency = idea.metrics.get("currency") or "RUB"
     price = idea.metrics.get("price")
-    if isinstance(price, (int, float)):
-        price_line = f"  Цена: {fmt_amount(float(price), 2)} {currency}"
-    else:
-        price_line = "  Цена: нет данных"
 
     entry_low, entry_high = idea.entry_range
     entry_line = (
@@ -86,7 +82,6 @@ def format_idea_plan_details(idea: "Idea") -> str:
     confidence = _confidence_ru(idea.confidence)
 
     lines = [
-        price_line,
         entry_line,
         f"  Рост: {probability}",
         f"  Уверенность: {confidence}",
@@ -187,6 +182,7 @@ _QUOTE_REASON_MESSAGES = {
     "upstream_unavailable": "внешний источник временно недоступен",
     "unknown_ticker": "тикер не найден у поставщика",
     "moex_unavailable": "MOEX временно недоступен, показана альтернативная котировка",
+    "not_available_in_tbank": "инструмент недоступен в Т-Банке",
 }
 
 

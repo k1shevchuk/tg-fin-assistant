@@ -38,7 +38,6 @@ def test_format_idea_plan_details_includes_key_blocks():
 
     formatted = format_idea_plan_details(idea)
 
-    assert "Цена: 205.00 RUB" in formatted
     assert "Диапазон покупки: 200.00–210.00 RUB" in formatted
     assert "Рост: 72% (скор 0.72)" in formatted
     assert "Уверенность: средняя" in formatted
