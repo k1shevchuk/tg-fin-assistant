@@ -1,0 +1,15 @@
+stocks:
+  - SBER
+  - GAZP
+  - ROSN
+  - YNDX
+  - TCSG
+bonds:
+  - SU26238RMFS9
+etfs:
+  - FXIT
+  - FXWO
+  - FXGD
+  - FXRB
+  - FXUS
+  - CRPT
