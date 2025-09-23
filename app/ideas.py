@@ -144,6 +144,15 @@ def _build_security_idea(ticker: str, board: str, tag: str) -> Optional[Idea]:
         logger.error("Unexpected error loading quote for %s %s: %s", ticker, board, exc)
         return None
 
+    if quote.price is None:
+        logger.warning(
+            "Skipping idea for %s %s: missing price (reason=%s)",
+            ticker,
+            board,
+            quote.reason,
+        )
+        return None
+
     board_for_history = quote.board or board
 
     try:

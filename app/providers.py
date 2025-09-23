@@ -16,6 +16,10 @@ class MarketDataError(RuntimeError):
     """Raised when market data for a security is unavailable."""
 
 
+class AggregatorAuthError(MarketDataError):
+    """Raised when an aggregator rejects a request due to missing credentials."""
+
+
 @dataclass(slots=True)
 class SourceRoute:
     name: Literal["MOEX", "BINANCE", "AGGREGATOR", "UNKNOWN"]
@@ -502,7 +506,20 @@ def _get_binance_quote(ticker: str, route: SourceRoute) -> Quote:
 
 
 def _get_aggregator_quote(ticker: str, route: SourceRoute) -> Quote:
-    quote = _fetch_twelvedata_quote(ticker, route)
+    try:
+        quote = _fetch_twelvedata_quote(ticker, route)
+    except AggregatorAuthError:
+        return Quote(
+            ticker=ticker,
+            price=None,
+            currency=route.currency or "USD",
+            ts_utc=None,
+            source="TWELVEDATA",
+            reason="missing_api_key",
+            context=route.reason,
+        )
+    except MarketDataError:
+        quote = None
     if quote:
         if route.reason and not quote.reason:
             quote.reason = route.reason
@@ -543,14 +560,18 @@ def _get_aggregator_quote(ticker: str, route: SourceRoute) -> Quote:
 def _fetch_twelvedata_quote(ticker: str, route: SourceRoute) -> Optional[Quote]:
     api_key = settings.TWELVEDATA_API_KEY
     if not api_key:
-        return None
+        raise AggregatorAuthError("missing_api_key")
 
     params = {"symbol": route.symbol, "apikey": api_key}
     response = _http_get(f"{_TWELVEDATA_BASE}/quote", params=params)
     response.raise_for_status()
     payload = response.json()
     if isinstance(payload, dict) and payload.get("status") == "error":
-        logger.warning("Twelve Data error for %s: %s", route.symbol, payload.get("message"))
+        message = str(payload.get("message") or "")
+        logger.warning("Twelve Data error for %s: %s", route.symbol, message)
+        lowered = message.lower()
+        if "api key" in lowered or "apikey" in lowered:
+            raise AggregatorAuthError("missing_api_key")
         return None
 
     price = _safe_float(payload.get("price") or payload.get("close"))
