@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from textwrap import shorten
-from typing import Iterable
+from typing import Iterable, Optional
 
 
 def fmt_amount(value: float, precision: int = 0) -> str:
@@ -174,3 +174,31 @@ def _render_primary_source(sources: Iterable["IdeaSource"]) -> str:
         else str(first.date)
     )
     return f"{first.name} ({date}) — {first.url}"
+
+
+_QUOTE_REASON_MESSAGES = {
+    "no_active_trading_on_moex": "торги на MOEX не активны, показана альтернативная котировка",
+    "delisted_from_moex": "инструмент делистингован на MOEX",
+    "moex_delisting_announced": "MOEX объявил делистинг, используем внешний источник",
+    "eod_close_fallback": "нет сделок сейчас, показано закрытие дня",
+    "no_trades_no_history": "нет свежих сделок и истории по инструменту",
+    "missing_api_key": "нет API ключа для агрегатора",
+    "upstream_unavailable": "внешний источник временно недоступен",
+    "unknown_ticker": "тикер не найден у поставщика",
+    "moex_unavailable": "MOEX временно недоступен, показана альтернативная котировка",
+}
+
+
+def describe_quote_reason(reason: Optional[str], context: Optional[str] = None) -> Optional[str]:
+    """Return a human-friendly explanation for quote availability."""
+
+    messages: list[str] = []
+    for code in (reason, context):
+        if not code:
+            continue
+        text = _QUOTE_REASON_MESSAGES.get(code)
+        if text and text not in messages:
+            messages.append(text)
+    if not messages:
+        return None
+    return "; ".join(messages)

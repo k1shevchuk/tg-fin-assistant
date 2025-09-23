@@ -9,10 +9,16 @@ from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import ContextTypes, ConversationHandler
 from ._requests import RequestException
 from .db import SessionLocal
-from .formatting import fmt_amount, fmt_signed, format_idea, format_idea_plan_details
+from .formatting import (
+    describe_quote_reason,
+    fmt_amount,
+    fmt_signed,
+    format_idea,
+    format_idea_plan_details,
+)
 from .ideas import generate_ideas, rank_and_filter
 from .models import User, Contribution
-from .providers import MarketDataError, Quote, get_security_quote
+from .providers import MarketDataError, Quote, get_quote
 from .strategy import propose_allocation
 
 # --- Кнопки главного меню
@@ -30,26 +36,53 @@ ADJUST_KB = ReplyKeyboardMarkup([[CANCEL_BTN]], resize_keyboard=True)
 
 
 def _apply_quote_to_line(line, quote: Quote) -> None:
-    line.note = None
     line.quote = quote
+    line.note = describe_quote_reason(quote.reason, quote.context)
+    line.lots = None
+    line.units = None
+    line.invested = None
+    line.leftover = float(line.amount)
 
-    lot_cost = Decimal(str(quote.price)) * Decimal(quote.lot)
+    if quote.price is None or quote.lot in (None, 0):
+        if quote.price is None and not line.note:
+            line.note = "котировка недоступна"
+        return
+
+    price_dec = Decimal(str(quote.price))
+    lot_dec = Decimal(str(quote.lot))
+    lot_cost = price_dec * lot_dec
     if lot_cost <= 0:
-        line.lots = None
-        line.units = None
-        line.invested = None
-        line.leftover = float(line.amount)
-        line.note = "некорректная цена от источника"
+        if not line.note:
+            line.note = "некорректная цена от источника"
         return
 
     amount_value = Decimal(line.amount)
     lots = int((amount_value / lot_cost).to_integral_value(rounding=ROUND_DOWN))
     line.lots = lots
-    line.units = lots * quote.lot
+    line.units = lots * int(quote.lot)
     invested = (lot_cost * lots).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     line.invested = float(invested)
     leftover = amount_value - invested
     line.leftover = float(leftover)
+
+
+def _format_quote_source(quote: Quote) -> str:
+    extras: list[str] = []
+    if quote.board:
+        extras.append(str(quote.board))
+    if quote.market:
+        extras.append(str(quote.market))
+    suffix = f" ({'/'.join(extras)})" if extras else ""
+    return f"{quote.source}{suffix}" if quote.source else ""
+
+
+def _currency_label(code: str | None) -> str:
+    if not code:
+        return "SUR"
+    upper = str(code).upper()
+    if upper in {"SUR", "RUB"}:
+        return "₽"
+    return upper
 
 
 def _fallback_quote_from_idea(line, idea) -> Quote | None:
@@ -68,14 +101,15 @@ def _fallback_quote_from_idea(line, idea) -> Quote | None:
     if lot_int <= 0:
         return None
 
+    ts_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     quote = Quote(
         ticker=(line.ticker or idea.ticker).upper(),
-        board=(line.board or idea.board or "TQBR").upper(),
         price=float(price),
         currency=str(currency),
+        ts_utc=ts_iso,
+        source="IDEA",
+        board=(line.board or idea.board or "TQBR").upper(),
         lot=lot_int,
-        as_of=datetime.now(timezone.utc),
-        source="MOEX ISS (идея)",
     )
     _apply_quote_to_line(line, quote)
     return quote
@@ -154,7 +188,7 @@ async def record_manual_contribution(update: Update, ctx: ContextTypes.DEFAULT_T
 
             if line.quote is None:
                 try:
-                    refreshed = get_security_quote(line.ticker, line.board or "TQBR")
+                    refreshed = get_quote(line.ticker)
                 except MarketDataError as exc:
                     idea = idea_lookup.get(
                         (line.ticker.upper(), (line.board or "TQBR").upper())
@@ -190,21 +224,30 @@ async def record_manual_contribution(update: Update, ctx: ContextTypes.DEFAULT_T
                 continue
 
             if line.quote:
-                quote_sources.add(line.quote.source)
-                price = fmt_amount(line.quote.price, precision=2)
-                if line.lots:
-                    invested = line.invested or 0.0
-                    info = (
-                        f"  {line.lots} лот × {line.quote.lot} шт = {line.units} шт по {price} ₽"
-                        f" → {fmt_amount(invested, precision=2)} ₽"
-                    )
-                    if line.leftover and line.leftover >= 1:
-                        info += f" (остаток {fmt_amount(line.leftover)} ₽)"
-                    section_lines.append(info)
-                else:
-                    section_lines.append(
-                        f"  Цена {price} ₽ за бумагу. Отложим {fmt_amount(line.amount)} ₽, пока не хватит на целый лот."
-                    )
+                source_label = _format_quote_source(line.quote)
+                if source_label:
+                    quote_sources.add(source_label)
+                if line.quote.price is not None:
+                    price = fmt_amount(line.quote.price, precision=2)
+                    currency = _currency_label(line.quote.currency)
+                    if line.lots:
+                        invested = line.invested or 0.0
+                        info = (
+                            f"  {line.lots} лот × {line.quote.lot or 1} шт = {line.units or 0} шт по {price} {currency}"
+                            f" → {fmt_amount(invested, precision=2)} {currency}"
+                        )
+                        if line.leftover and line.leftover >= 1:
+                            info += f" (остаток {fmt_amount(line.leftover)} {currency})"
+                        section_lines.append(info)
+                    else:
+                        section_lines.append(
+                            f"  Цена {price} {currency} за бумагу. Отложим {fmt_amount(line.amount)} {currency}, пока не хватит на целый лот."
+                        )
+                note_text = line.note or describe_quote_reason(
+                    line.quote.reason, line.quote.context
+                )
+                if note_text:
+                    section_lines.append(f"  Примечание: {note_text}")
             else:
                 note = line.note or "котировка недоступна"
                 section_lines.append(f"  Примечание: {note}")

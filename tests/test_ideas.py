@@ -22,8 +22,12 @@ class DummyQuote:
         self.board = "TQBR"
         self.ticker = "SBER"
         self.lot = 10
-        self.as_of = datetime.now(timezone.utc)
+        self.ts_utc = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         self.change = 1.2
+
+    @property
+    def as_of(self):
+        return datetime.fromisoformat(self.ts_utc.replace("Z", "+00:00"))
 
 
 @pytest.fixture
@@ -40,7 +44,7 @@ def mock_providers(monkeypatch):
 
     monkeypatch.setattr(ideas, "portfolio_assets", lambda risk: [DummyAsset("SBER", "TQBR", "dividends")])
     monkeypatch.setattr(ideas, "_extra_candidates", lambda: [])
-    monkeypatch.setattr(ideas, "get_security_quote", lambda ticker, board: DummyQuote())
+    monkeypatch.setattr(ideas, "get_quote", lambda ticker: DummyQuote())
     monkeypatch.setattr(ideas, "get_security_snapshot", lambda ticker: {"PE": "8.5", "DIVYIELD": "12.1"})
     monkeypatch.setattr(ideas, "get_security_history", lambda ticker, board, days=260: history_rows)
     monkeypatch.setattr(ideas, "get_key_rate", lambda: 0.12)
@@ -164,7 +168,7 @@ def test_generate_ideas_survives_key_rate_failure(monkeypatch):
 
     monkeypatch.setattr(ideas, "portfolio_assets", lambda risk: [DummyAsset("SBER", "TQBR", "dividends")])
     monkeypatch.setattr(ideas, "_extra_candidates", lambda: [])
-    monkeypatch.setattr(ideas, "get_security_quote", lambda ticker, board: DummyQuote())
+    monkeypatch.setattr(ideas, "get_quote", lambda ticker: DummyQuote())
 
     def boom_snapshot(ticker: str):
         raise ideas.RequestException("no snapshot")

@@ -30,6 +30,12 @@ except ImportError:  # pragma: no cover - fallback to stdlib logging
                 kwargs["exc_info"] = exc
             self._logger.info(message, *args, **kwargs)
 
+        def debug(self, message: str, *args: Any, **kwargs: Any) -> None:
+            exc = kwargs.pop("exc", None)
+            if exc:
+                kwargs["exc_info"] = exc
+            self._logger.debug(message, *args, **kwargs)
+
     logger = _Adapter()
 
 __all__ = ["logger"]

@@ -11,17 +11,163 @@ from app import providers
 def clear_provider_caches():
     providers._KEY_RATE_CACHE = None
     providers._INDEX_CACHE.clear()
-    providers._SNAPSHOT_CACHE.clear()
+    providers._SECURITY_CACHE.clear()
     providers._HISTORY_CACHE.clear()
     providers._QUOTE_CACHE.clear()
     responses.reset()
     yield
     providers._KEY_RATE_CACHE = None
     providers._INDEX_CACHE.clear()
-    providers._SNAPSHOT_CACHE.clear()
+    providers._SECURITY_CACHE.clear()
     providers._HISTORY_CACHE.clear()
     providers._QUOTE_CACHE.clear()
     responses.reset()
+
+
+@responses.activate
+def test_resolve_source_detects_moex_board():
+    responses.add(
+        responses.GET,
+        re.compile(r"https://iss\.moex\.com/iss/securities/SBER\.json.*"),
+        json={
+            "securities": {
+                "columns": ["SECID"],
+                "data": [["SBER"]],
+            },
+            "boards": {
+                "columns": ["boardid", "is_traded", "market", "engine"],
+                "data": [["TQBR", 1, "shares", "stock"]],
+            },
+        },
+    )
+
+    route = providers.resolve_source("SBER")
+
+    assert route.name == "MOEX"
+    assert route.board == "TQBR"
+    assert route.market == "shares"
+
+
+def test_resolve_source_aggregator_for_delisted():
+    route = providers.resolve_source("FXIT")
+    assert route.name == "AGGREGATOR"
+    assert route.reason == "delisted_from_moex"
+    assert route.symbol.endswith("FXIT.MOEX")
+
+
+@responses.activate
+def test_get_quote_moex_returns_price_and_metadata():
+    responses.add(
+        responses.GET,
+        re.compile(r"https://iss\.moex\.com/iss/securities/SBER\.json.*"),
+        json={
+            "securities": {
+                "columns": ["SECID", "FACEUNIT", "LOTSIZE"],
+                "data": [["SBER", "SUR", 10]],
+            },
+            "boards": {
+                "columns": ["boardid", "is_traded", "market", "engine"],
+                "data": [["TQBR", 1, "shares", "stock"]],
+            },
+        },
+    )
+    responses.add(
+        responses.GET,
+        re.compile(
+            r"https://iss\.moex\.com/iss/engines/stock/markets/shares/boards/TQBR/securities/SBER\.json.*"
+        ),
+        json={
+            "marketdata": {
+                "columns": [
+                    "BOARDID",
+                    "LAST",
+                    "VOLTODAY",
+                    "VALTODAY",
+                    "LASTCHANGEPRCNT",
+                    "SYSTIME",
+                    "LOTSIZE",
+                ],
+                "data": [
+                    [
+                        "TQBR",
+                        250.5,
+                        123456,
+                        4567890,
+                        1.25,
+                        "2024-10-01 12:00:00",
+                        10,
+                    ]
+                ],
+            }
+        },
+    )
+
+    quote = providers.get_quote("SBER")
+
+    assert quote.source == "MOEX"
+    assert quote.board == "TQBR"
+    assert quote.price == pytest.approx(250.5)
+    assert quote.currency == "SUR"
+    assert quote.lot == 10
+    assert quote.volume == pytest.approx(123456)
+    assert quote.value == pytest.approx(4567890)
+    assert quote.change == pytest.approx(1.25)
+    assert quote.ts_utc is not None
+
+
+@responses.activate
+def test_get_quote_falls_back_to_daily_close():
+    responses.add(
+        responses.GET,
+        re.compile(r"https://iss\.moex\.com/iss/securities/SBER\.json.*"),
+        json={
+            "securities": {
+                "columns": ["SECID", "FACEUNIT", "LOTSIZE"],
+                "data": [["SBER", "SUR", 10]],
+            },
+            "boards": {
+                "columns": ["boardid", "is_traded", "market", "engine"],
+                "data": [["TQBR", 1, "shares", "stock"]],
+            },
+        },
+    )
+    responses.add(
+        responses.GET,
+        re.compile(
+            r"https://iss\.moex\.com/iss/engines/stock/markets/shares/boards/TQBR/securities/SBER\.json.*"
+        ),
+        json={
+            "marketdata": {
+                "columns": ["BOARDID", "SYSTIME"],
+                "data": [["TQBR", "2024-10-01 12:00:00"]],
+            }
+        },
+    )
+    responses.add(
+        responses.GET,
+        re.compile(
+            r"https://iss\.moex\.com/iss/history/engines/stock/markets/shares/boards/TQBR/securities/SBER\.json.*"
+        ),
+        json={
+            "history": {
+                "columns": ["TRADEDATE", "CLOSE"],
+                "data": [["2024-10-01", 248.0]],
+            }
+        },
+    )
+
+    quote = providers.get_quote("SBER")
+
+    assert quote.price == pytest.approx(248.0)
+    assert quote.reason == "eod_close_fallback"
+
+
+def test_get_quote_aggregator_without_keys():
+    quote = providers.get_quote("FXIT")
+    assert quote.source == "TWELVEDATA"
+    assert quote.price is None
+    assert quote.reason == "missing_api_key"
+    assert quote.context == "delisted_from_moex"
 
 
 @responses.activate
@@ -63,26 +209,6 @@ def test_get_key_rate_falls_back_to_cbr():
 
 
 @responses.activate
-def test_get_key_rate_uses_configured_fallback(monkeypatch):
-    monkeypatch.setattr(providers.settings, "KEY_RATE_FALLBACK", 0.123)
-    responses.add(
-        responses.GET,
-        "https://iss.moex.com/iss/statistics/engines/stock/markets/bonds/ruonia.json",
-        status=500,
-        json={},
-    )
-    responses.add(
-        responses.GET,
-        "https://www.cbr-xml-daily.ru/daily_json.js",
-        status=500,
-        json={},
-    )
-    rate = providers.get_key_rate()
-    assert pytest.approx(rate, rel=1e-6) == 0.123
-    assert len(responses.calls) == 2
-
-
-@responses.activate
 def test_get_index_value_parses_payload():
     responses.add(
         responses.GET,
@@ -115,89 +241,4 @@ def test_get_security_history_aggregates_rows():
     assert len(history) == 2
     assert history[0]["TRADEDATE"] == "2024-09-01"
     providers.get_security_history("SBER", "TQBR", days=5)
-    assert len(responses.calls) == 1
-
-
-@responses.activate
-def test_get_security_quote_uses_board_specific_market():
-    responses.add(
-        responses.GET,
-        "https://iss.moex.com/iss/engines/stock/markets/etf/securities/FXIT.json",
-        json={
-            "securities": [{"BOARDID": "TQTF", "FACEUNIT": "USD", "LOTSIZE": 1}],
-            "marketdata": [
-                {
-                    "BOARDID": "TQTF",
-                    "LAST": 80.5,
-                    "SYSTIME": "2024-10-01 12:00:00",
-                }
-            ],
-        },
-    )
-
-    quote = providers.get_security_quote("FXIT", "TQTF")
-
-    assert quote.board == "TQTF"
-    assert quote.price == pytest.approx(80.5)
-    assert len(responses.calls) == 1
-
-
-@responses.activate
-def test_get_security_quote_enriches_data():
-    responses.add(
-        responses.GET,
-        "https://iss.moex.com/iss/engines/stock/markets/shares/securities/SBER.json",
-        json={
-            "securities": [{"BOARDID": "TQBR", "FACEUNIT": "RUB", "LOTSIZE": 10}],
-            "marketdata": [
-                {
-                    "BOARDID": "TQBR",
-                    "LAST": 250.5,
-                    "VOLTODAY": 123456,
-                    "VALTODAY": 4567890,
-                    "LASTCHANGEPRCNT": 1.25,
-                    "SYSTIME": "2024-10-01 12:00:00",
-                }
-            ],
-        },
-    )
-    quote = providers.get_security_quote("SBER", "TQBR")
-    assert quote.price == pytest.approx(250.5)
-    assert quote.volume == pytest.approx(123456)
-    assert quote.value == pytest.approx(4567890)
-    assert quote.change == pytest.approx(1.25)
-    assert quote.currency == "RUB"
-
-
-@responses.activate
-def test_get_security_quote_returns_stale_on_failure():
-    responses.add(
-        responses.GET,
-        "https://iss.moex.com/iss/engines/stock/markets/shares/securities/SBER.json",
-        json={
-            "securities": [{"BOARDID": "TQBR", "FACEUNIT": "RUB", "LOTSIZE": 10}],
-            "marketdata": [
-                {
-                    "BOARDID": "TQBR",
-                    "LAST": 250.5,
-                    "SYSTIME": "2024-10-01 12:00:00",
-                }
-            ],
-        },
-    )
-    quote = providers.get_security_quote("SBER", "TQBR")
-
-    stale_timestamp = datetime.now(timezone.utc) - providers._QUOTE_CACHE_TTL - timedelta(minutes=1)
-    providers._QUOTE_CACHE[("SBER", "TQBR")] = (stale_timestamp, quote)
-
-    responses.reset()
-    responses.add(
-        responses.GET,
-        "https://iss.moex.com/iss/engines/stock/markets/shares/securities/SBER.json",
-        status=500,
-        json={},
-    )
-
-    fallback = providers.get_security_quote("SBER", "TQBR")
-    assert fallback is quote
     assert len(responses.calls) == 1

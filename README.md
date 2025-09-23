@@ -44,6 +44,10 @@ IDEAS_MIN_SOURCES=2
 IDEAS_MAX_AGE_DAYS=90
 IDEAS_TOPN=5
 IDEAS_SCORE_THRESHOLD=0.6
+TWELVEDATA_API_KEY= # опционально, ключ Twelve Data
+FINNHUB_API_KEY=    # опционально, ключ Finnhub
+HTTP_TIMEOUT_SEC=5
+CACHE_TTL_SEC=10
 
 4. Локальный запуск
 python -m app.main

@@ -11,8 +11,8 @@ from .providers import (
     MarketDataError,
     get_key_rate,
     get_market_commentary,
+    get_quote,
     get_security_history,
-    get_security_quote,
     get_security_snapshot,
 )
 from .providers_coingecko import get_coin_market
@@ -136,13 +136,15 @@ def rank_and_filter(ideas: list[Idea]) -> list[Idea]:
 
 def _build_security_idea(ticker: str, board: str, tag: str) -> Optional[Idea]:
     try:
-        quote = get_security_quote(ticker, board)
+        quote = get_quote(ticker)
     except MarketDataError as exc:
         logger.warning("Quote unavailable for %s %s: %s", ticker, board, exc)
         return None
     except Exception as exc:  # pragma: no cover
         logger.error("Unexpected error loading quote for %s %s: %s", ticker, board, exc)
         return None
+
+    board_for_history = quote.board or board
 
     try:
         snapshot = get_security_snapshot(ticker)
@@ -152,7 +154,7 @@ def _build_security_idea(ticker: str, board: str, tag: str) -> Optional[Idea]:
     except Exception as exc:  # pragma: no cover
         logger.error("Unexpected snapshot error for %s: %s", ticker, exc)
         snapshot = {}
-    history_rows = get_security_history(ticker, board, days=260)
+    history_rows = get_security_history(ticker, board_for_history, days=260)
     if not history_rows:
         logger.warning("History empty for %s", ticker)
         return None
@@ -173,14 +175,16 @@ def _build_security_idea(ticker: str, board: str, tag: str) -> Optional[Idea]:
     entry_high = round(quote.price * 1.03, 2)
     stop = round(quote.price * 0.9, 2)
 
-    sources, macro_value = _collect_sources_for_security(ticker, board, quote, snapshot, tag)
+    sources, macro_value = _collect_sources_for_security(
+        ticker, board_for_history, quote, snapshot, tag
+    )
     if macro_value is not None:
         metrics["macro_indicator"] = macro_value
     risks = _detect_risks(metrics, tag)
 
     return Idea(
         ticker=ticker.upper(),
-        board=board.upper(),
+        board=board_for_history.upper(),
         asset_type=tag,
         thesis=thesis,
         horizon_days=horizon,
@@ -311,7 +315,10 @@ def _compute_metrics(history: list[HistoryPoint], quote, snapshot: dict) -> dict
         else:
             metrics[key] = None
     metrics["lot"] = quote.lot
-    metrics["lot_value"] = quote.price * quote.lot
+    if quote.price is not None and quote.lot:
+        metrics["lot_value"] = quote.price * quote.lot
+    else:
+        metrics["lot_value"] = None
     metrics["change_percent"] = quote.change
     return metrics
 

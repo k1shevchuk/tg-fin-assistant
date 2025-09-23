@@ -9,7 +9,7 @@ from .providers import (
     Quote,
     get_key_rate,
     get_market_commentary,
-    get_security_quote,
+    get_quote,
 )
 
 
@@ -162,28 +162,33 @@ def propose_allocation(amount: float, risk: str) -> AllocationAdvice:
 
         if asset.type != "cash" and asset.ticker:
             try:
-                quote = get_security_quote(asset.ticker, asset.board or "TQBR")
+                quote = get_quote(asset.ticker)
             except MarketDataError:
                 line.note = "котировку не удалось получить"
             except Exception:
                 line.note = "ошибка при получении котировки"
             else:
                 line.quote = quote
-                lot_cost = Decimal(str(quote.price)) * Decimal(quote.lot)
-                if lot_cost > 0:
-                    lots = int(
-                        (Decimal(amount_value) / lot_cost).to_integral_value(
-                            rounding=ROUND_DOWN
-                        )
-                    )
-                    line.lots = lots
-                    line.units = lots * quote.lot
-                    invested = (lot_cost * lots).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-                    line.invested = float(invested)
-                    leftover = Decimal(amount_value) - invested
-                    line.leftover = float(leftover)
+                if quote.price is None or quote.lot in (None, 0):
+                    line.note = line.note or "котировка недоступна"
                 else:
-                    line.note = "некорректная цена от источника"
+                    lot_cost = Decimal(str(quote.price)) * Decimal(quote.lot)
+                    if lot_cost > 0:
+                        lots = int(
+                            (Decimal(amount_value) / lot_cost).to_integral_value(
+                                rounding=ROUND_DOWN
+                            )
+                        )
+                        line.lots = lots
+                        line.units = lots * quote.lot
+                        invested = (lot_cost * lots).quantize(
+                            Decimal("0.01"), rounding=ROUND_HALF_UP
+                        )
+                        line.invested = float(invested)
+                        leftover = Decimal(amount_value) - invested
+                        line.leftover = float(leftover)
+                    else:
+                        line.note = "некорректная цена от источника"
 
         plan.append(line)
 
