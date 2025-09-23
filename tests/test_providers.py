@@ -5,6 +5,7 @@ import pytest
 import responses
 
 from app import providers
+from app.config import settings
 
 
 @pytest.fixture(autouse=True)
@@ -185,12 +186,40 @@ def test_get_quote_falls_back_to_daily_close():
     assert quote.reason == "eod_close_fallback"
 
 
-def test_get_quote_aggregator_without_keys():
+@responses.activate
+def test_get_quote_aggregator_without_keys(monkeypatch):
+    monkeypatch.delenv("TWELVEDATA_API_KEY", raising=False)
+    monkeypatch.delenv("FINNHUB_API_KEY", raising=False)
+    monkeypatch.setattr(settings, "TWELVEDATA_API_KEY", "")
+    monkeypatch.setattr(settings, "FINNHUB_API_KEY", "")
+
+    responses.add(
+        responses.GET,
+        re.compile(r"https://api\.twelvedata\.com/quote.*"),
+        status=401,
+        json={"status": "error", "code": 401, "message": "Unauthorized"},
+    )
+
+    def _fail_finnhub(*args, **kwargs):
+        raise AssertionError("Finnhub should not be called")
+
+    monkeypatch.setattr(providers, "_fetch_finnhub_quote", _fail_finnhub)
+
+    route = providers.resolve_source("YNDX")
+
+    monkeypatch.setattr(settings, "TWELVEDATA_API_KEY", "invalid-key")
+    with pytest.raises(providers.AggregatorAuthError):
+        providers._fetch_twelvedata_quote("YNDX", route)
+
+    monkeypatch.setattr(settings, "TWELVEDATA_API_KEY", "")
+
     quote = providers.get_quote("YNDX")
+
     assert quote.source == "TWELVEDATA"
     assert quote.price is None
     assert quote.reason == "missing_api_key"
     assert quote.context == "moex_delisting_announced"
+    assert len(responses.calls) == 1
 
 
 @responses.activate
