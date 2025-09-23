@@ -171,6 +171,27 @@ def test_get_quote_aggregator_without_keys():
 
 
 @responses.activate
+def test_get_quote_aggregator_twelvedata_unauthorized(monkeypatch):
+    monkeypatch.setattr(providers.settings, "TWELVEDATA_API_KEY", "bad-key")
+    monkeypatch.setattr(providers.settings, "FINNHUB_API_KEY", "fallback-key")
+
+    responses.add(
+        responses.GET,
+        re.compile(r"https://api\.twelvedata\.com/quote.*"),
+        status=401,
+        json={"status": "error", "code": 401, "message": "Unauthorized"},
+    )
+
+    quote = providers.get_quote("FXIT")
+
+    assert quote.source == "TWELVEDATA"
+    assert quote.reason == "missing_api_key"
+    assert quote.price is None
+    assert quote.context == "delisted_from_moex"
+    assert len(responses.calls) == 1
+
+
+@responses.activate
 def test_get_key_rate_fetches_ruonia():
     responses.add(
         responses.GET,

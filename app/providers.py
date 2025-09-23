@@ -564,13 +564,29 @@ def _fetch_twelvedata_quote(ticker: str, route: SourceRoute) -> Optional[Quote]:
 
     params = {"symbol": route.symbol, "apikey": api_key}
     response = _http_get(f"{_TWELVEDATA_BASE}/quote", params=params)
+    status_code = getattr(response, "status_code", None)
+    if status_code in (401, 403):
+        logger.warning(
+            "Twelve Data auth failure for %s: HTTP %s",
+            route.symbol,
+            status_code,
+        )
+        raise AggregatorAuthError("missing_api_key")
+
     response.raise_for_status()
     payload = response.json()
     if isinstance(payload, dict) and payload.get("status") == "error":
         message = str(payload.get("message") or "")
         logger.warning("Twelve Data error for %s: %s", route.symbol, message)
+        code_raw = payload.get("code")
+        try:
+            code = int(code_raw)
+        except (TypeError, ValueError):
+            code = None
+        if code in (401, 403):
+            raise AggregatorAuthError("missing_api_key")
         lowered = message.lower()
-        if "api key" in lowered or "apikey" in lowered:
+        if "api key" in lowered or "apikey" in lowered or "unauthorized" in lowered:
             raise AggregatorAuthError("missing_api_key")
         return None
 
