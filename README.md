@@ -28,10 +28,27 @@ Telegram Finance Assistant Bot
 1. Клонировать
 git clone https://github.com/k1shevchuk/tg-fin-assistant.git
 cd tg-fin-assistant
+1.1 Загрузить из гит ветку и PR который прислал Codex:
+   
+  git checkout main
+  
+  git pull origin main
+  
+  git status   # должно показать clean
+  
+  git fetch origin
+  
+  git checkout -B codex/pr origin/ССЫЛКА_НА_ВЕТКУ
+  
+  git merge -X ours origin/main
+  
+  git push --force-with-lease origin HEAD:ССЫЛКА_НА_ВЕТКУ
 
-2. Зависимости
+3. Зависимости
 python3 -m venv venv
+
 source venv/bin/activate
+
 pip install -r requirements.txt
 
 3. Конфигурация
@@ -75,8 +92,11 @@ WantedBy=multi-user.target
 Активировать:
 
 sudo systemctl daemon-reload
+
 sudo systemctl enable tgfinance
+
 sudo systemctl start tgfinance
+
 sudo systemctl status tgfinance
 
 
@@ -111,3 +131,6 @@ journalctl -u tgfinance -f
 Отдельный чат с промптом = стратегия (сценарии, анализ макроэкономики, конкретные активы).
 
 Вместе они работают как полноценный финансовый помощник.
+
+
+
