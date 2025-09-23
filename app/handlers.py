@@ -37,15 +37,20 @@ ADJUST_KB = ReplyKeyboardMarkup([[CANCEL_BTN]], resize_keyboard=True)
 
 def _apply_quote_to_line(line, quote: Quote) -> None:
     line.quote = quote
-    line.note = describe_quote_reason(quote.reason, quote.context)
+    line.note = None
     line.lots = None
     line.units = None
     line.invested = None
     line.leftover = float(line.amount)
 
-    if quote.price is None or quote.lot in (None, 0):
-        if quote.price is None and not line.note:
-            line.note = "котировка недоступна"
+    reason_text = describe_quote_reason(quote.reason, quote.context)
+
+    if quote.price is None or (isinstance(quote.price, (int, float)) and quote.price <= 0):
+        line.note = reason_text or "котировка недоступна"
+        return
+
+    if quote.lot in (None, 0):
+        line.note = reason_text or "некорректные данные по лоту"
         return
 
     price_dec = Decimal(str(quote.price))
@@ -78,10 +83,10 @@ def _format_quote_source(quote: Quote) -> str:
 
 def _currency_label(code: str | None) -> str:
     if not code:
-        return "SUR"
+        return "RUB"
     upper = str(code).upper()
-    if upper in {"SUR", "RUB"}:
-        return "₽"
+    if upper in {"SUR", "RUR", "RUB"}:
+        return "RUB"
     return upper
 
 
@@ -223,12 +228,28 @@ async def record_manual_contribution(update: Update, ctx: ContextTypes.DEFAULT_T
                 lines.append("\n".join(section_lines))
                 continue
 
+            price_for_display = False
+            unavailable_reason_codes = {
+                "moex_delisting_announced",
+                "unknown_ticker",
+                "no_active_trading_on_moex",
+            }
+
             if line.quote:
                 source_label = _format_quote_source(line.quote)
                 if source_label:
                     quote_sources.add(source_label)
-                if line.quote.price is not None:
-                    price = fmt_amount(line.quote.price, precision=2)
+
+                price_value = line.quote.price if isinstance(line.quote.price, (int, float)) else None
+                reason_code = (line.quote.reason or "").strip()
+                price_for_display = (
+                    price_value is not None
+                    and price_value > 0
+                    and reason_code not in unavailable_reason_codes
+                )
+
+                if price_for_display:
+                    price = fmt_amount(price_value, precision=2)
                     currency = _currency_label(line.quote.currency)
                     if line.lots:
                         invested = line.invested or 0.0
@@ -243,16 +264,17 @@ async def record_manual_contribution(update: Update, ctx: ContextTypes.DEFAULT_T
                         section_lines.append(
                             f"  Цена {price} {currency} за бумагу. Отложим {fmt_amount(line.amount)} {currency}, пока не хватит на целый лот."
                         )
-                note_text = line.note or describe_quote_reason(
-                    line.quote.reason, line.quote.context
-                )
-                if note_text:
-                    section_lines.append(f"  Примечание: {note_text}")
+                else:
+                    note_text = line.note or describe_quote_reason(
+                        line.quote.reason, line.quote.context
+                    )
+                    if note_text:
+                        section_lines.append(f"  Примечание: {note_text}")
             else:
                 note = line.note or "котировка недоступна"
                 section_lines.append(f"  Примечание: {note}")
 
-            if line.ticker:
+            if price_for_display and line.ticker:
                 key = (line.ticker.upper(), (line.board or "TQBR").upper())
                 idea = idea_lookup.get(key)
                 if idea:

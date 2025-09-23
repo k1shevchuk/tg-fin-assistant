@@ -659,12 +659,13 @@ def _fetch_twelvedata_quote(ticker: str, route: SourceRoute) -> Optional[Quote]:
     payload = response.json()
     if isinstance(payload, dict) and payload.get("status") == "error":
         message = str(payload.get("message") or "")
-        logger.warning("Twelve Data error for %s: %s", route.symbol, message)
         code_raw = payload.get("code")
         try:
             code = int(code_raw)
         except (TypeError, ValueError):
             code = None
+        log_func = logger.info if code == 404 else logger.warning
+        log_func("Twelve Data error for %s: %s", route.symbol, message)
         if code in (401, 403):
             raise AggregatorAuthError("missing_api_key")
         lowered = message.lower()
