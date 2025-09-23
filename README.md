@@ -31,22 +31,32 @@ cd tg-fin-assistant
 
 2. Зависимости
 python3 -m venv venv
+
 source venv/bin/activate
+
 pip install -r requirements.txt
 
 3. Конфигурация
 
 Создайте .env в корне:
-
 BOT_TOKEN=ваш_токен_от_BotFather
+
 TZ=Europe/Moscow
+
 IDEAS_MIN_SOURCES=2
+
 IDEAS_MAX_AGE_DAYS=90
+
 IDEAS_TOPN=5
+
 IDEAS_SCORE_THRESHOLD=0.6
+
 TWELVEDATA_API_KEY= # опционально, ключ Twelve Data
+
 FINNHUB_API_KEY=    # опционально, ключ Finnhub
+
 HTTP_TIMEOUT_SEC=5
+
 CACHE_TTL_SEC=10
 
 4. Локальный запуск
@@ -75,8 +85,11 @@ WantedBy=multi-user.target
 Активировать:
 
 sudo systemctl daemon-reload
+
 sudo systemctl enable tgfinance
+
 sudo systemctl start tgfinance
+
 sudo systemctl status tgfinance
 
 
@@ -111,3 +124,4 @@ journalctl -u tgfinance -f
 Отдельный чат с промптом = стратегия (сценарии, анализ макроэкономики, конкретные активы).
 
 Вместе они работают как полноценный финансовый помощник.
+
